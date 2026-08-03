@@ -119,7 +119,8 @@ submission.zip
 - ✅ Bắt buộc ghi rõ cách lấy mô hình trong bài nộp/bài báo (để tái lập).
 
 ### Ứng viên mô hình hợp lệ (open ≤14B, phát hành < 1/6/2026) — *cần cập nhật theo ngày phát hành thực tế:*
-- **LLM code/pandas:** Qwen2.5-Coder-14B-Instruct, Qwen3-14B / Qwen3-8B (phát hành 4/2025 ✅), DeepSeek-R1-Distill-Qwen-14B / Distill-Llama-8B (reasoning), Phi-4 (14B, 2/2025 ✅), Gemma-2-9B, Llama-3.1-8B.
+- **✅ ĐÃ CHỐT — LLM chính: Qwen3.5-9B-Instruct** (`Qwen/Qwen3.5-9B`): Apache 2.0, 9B ≤14B, phát hành **2/3/2026** (< 1/6/2026 → hợp lệ), hybrid Gated DeltaNet + Gated Attention, context 262K, tool calling. Giai đoạn đầu dùng API (provider mở, OpenAI-compatible); sau thuê GPU chạy local vLLM cùng model. ⚠️ Kiến trúc linear-attention → cần xác minh provider API serve + vLLM hỗ trợ trước khi thuê GPU; dự phòng: Qwen3-8B/14B (4/2025).
+- **LLM code/pandas (dự phòng):** Qwen2.5-Coder-14B-Instruct, Qwen3-14B / Qwen3-8B (phát hành 4/2025 ✅), DeepSeek-R1-Distill-Qwen-14B / Distill-Llama-8B (reasoning), Phi-4 (14B, 2/2025 ✅), Gemma-2-9B, Llama-3.1-8B.
 - **Embeddings:** BAAI/bge-m3 (~568M ✅), Qwen3-Embedding-0.6B/4B/8B ✅ (không vượt 14B).
 - **Reranker:** bge-reranker-v2-m3 (~568M ✅), Qwen3-Reranker-0.6B/4B/8B ✅.
 - ⚠️ *Quy ước:* giới hạn 14B áp cho "mô hình ngôn ngữ"; embedding/reranker cỡ nhỏ thường được chấp nhận nhưng nên kiểm chứng lại thông báo BTC.
@@ -192,7 +193,8 @@ questions.jsonl
 
 ## 8. Ngữ cảnh dự án & trạng thái
 
-- **Trạng thái hiện tại:** Mới bắt đầu. Thư mục `D:\GURU` trống. Chưa có dữ liệu tải về, chưa có code.
+- **Kế hoạch triển khai Agentic RAG:** xem `docs/plan_agentic_rag.md` (kế hoạch chi tiết cấp module, milestone, schema, rủi ro). Đây là plan chính thức của dự án — cập nhật khi có thay đổi.
+- **Trạng thái hiện tại:** Đã tải đủ dataset về `data/` (100 ticker × 2015–2025 × consolidated/separate), đã tạo `.gitignore` (bỏ `data/`). Code chưa có — bắt đầu từ ETL (Milestone M0–M2).
 - **Việc cần làm kế tiếp:**
   1. Tải dataset ViFinQA từ Hugging Face (questions, code_stock.csv, financial_statements).
   2. Xác minh câu hỏi kiểm thử của BTC trùng/khác với 1,012 câu HF.

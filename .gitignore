@@ -1,0 +1,84 @@
+# ============================================================
+# .gitignore — Dự án GURU · ViFinQA Competition
+# Mục tiêu: KHÔNG push dữ liệu, model, file sinh ra lên git.
+# ============================================================
+
+# ---------- DỮ LIỆU (quan trọng nhất) ----------
+# Toàn bộ thư mục data/: dataset thô tải từ Hugging Face + CSV chuẩn hoá phát sinh.
+# Raw dataset ~363MB+ — không bao giờ được push lên git.
+data/
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+*.egg
+
+# ---------- Môi trường ảo ----------
+.venv/
+venv/
+env/
+ENV/
+virtualenv/
+
+# ---------- Notebook / cache ----------
+.ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---------- Secrets ----------
+# File chứa token/key cục bộ (huggingface, vllm, ...)
+.env
+.env.*
+!.env.example
+credentials.json
+*.key
+*.pem
+
+# ---------- Model LLM / weights (KHÔNG push model) ----------
+models/
+weights/
+*.safetensors
+*.gguf
+*.bin
+*.onnx
+*.pt
+*.pth
+
+# Cache Hugging Face cục bộ
+.cache/huggingface/
+~/.cache/huggingface/
+
+# ---------- Output / logs ----------
+runs/
+output/
+results/
+*.log
+logs/
+
+# ---------- Báo cáo / file tạm OCR ----------
+# File extract/thuyết minh sinh ra trong quá trình ETL
+ocr_*/           # nếu sinh ra thư mục dạng này
+*.incomplete     # file tải dở
+
+# ---------- Hệ điều hành ----------
+.DS_Store
+Thumbs.db
+
+# ---------- IDE ----------
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ---------- Nộp bài ----------
+# Chỉ để ZIP submission đóng gói cục bộ, không push
+submission*.zip
+dist/
