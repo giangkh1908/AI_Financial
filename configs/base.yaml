@@ -1,0 +1,30 @@
+# ============================================================
+# Cấu hình gốc — áp cho mọi chạy.
+# Các file api.yaml / local_vllm.yaml kế thừa & ghi đè phần llm.
+# ============================================================
+paths:
+  data_dir: data
+  derived_dir: data/derived
+  out_dir: data/out
+
+retrieval:
+  k: 10              # top-k bảng trả về cho agent
+  rerank_depth: 100  # số bảng đưa vào reranker
+  rrf_k: 60          # hằng số K trong RRF
+
+sandbox:
+  timeout: 20        # giây, chạy pandas_query
+  max_code_len: 4000
+  max_ast_nodes: 300
+
+answer_abs_tol: 0.01  # tolerance đáp án (giả định theo paper)
+step_budget: 10       # số bước tối đa trong ReAct loop
+
+llm:
+  provider: openrouter
+  base_url: https://openrouter.ai/api/v1
+  model_id: qwen/qwen3.5-9b
+  temperature: 0.0
+  max_tokens: 4096
+  timeout: 60.0
+  retries: 3

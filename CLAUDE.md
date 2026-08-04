@@ -119,7 +119,7 @@ submission.zip
 - ✅ Bắt buộc ghi rõ cách lấy mô hình trong bài nộp/bài báo (để tái lập).
 
 ### Ứng viên mô hình hợp lệ (open ≤14B, phát hành < 1/6/2026) — *cần cập nhật theo ngày phát hành thực tế:*
-- **✅ ĐÃ CHỐT — LLM chính: Qwen3.5-9B-Instruct** (`Qwen/Qwen3.5-9B`): Apache 2.0, 9B ≤14B, phát hành **2/3/2026** (< 1/6/2026 → hợp lệ), hybrid Gated DeltaNet + Gated Attention, context 262K, tool calling. Giai đoạn đầu dùng API (provider mở, OpenAI-compatible); sau thuê GPU chạy local vLLM cùng model. ⚠️ Kiến trúc linear-attention → cần xác minh provider API serve + vLLM hỗ trợ trước khi thuê GPU; dự phòng: Qwen3-8B/14B (4/2025).
+- **✅ ĐÃ CHỐT — LLM chính: Qwen3.5-9B-Instruct** (`Qwen/Qwen3.5-9B`): Apache 2.0, 9B ≤14B, phát hành **2/3/2026** (< 1/6/2026 → hợp lệ), hybrid Gated DeltaNet + Gated Attention, context 262K, tool calling. Giai đoạn đầu dùng **API OpenRouter** — model ID `qwen/qwen3.5-9b` (đã xác minh có trên OpenRouter, $0.10/$0.15 per 1M, 262K ctx); sau thuê GPU chạy local vLLM cùng model. ⚠️ Kiến trúc linear-attention → cần xác minh vLLM hỗ trợ trước khi thuê GPU; dự phòng: Qwen3-8B/14B (4/2025).
 - **LLM code/pandas (dự phòng):** Qwen2.5-Coder-14B-Instruct, Qwen3-14B / Qwen3-8B (phát hành 4/2025 ✅), DeepSeek-R1-Distill-Qwen-14B / Distill-Llama-8B (reasoning), Phi-4 (14B, 2/2025 ✅), Gemma-2-9B, Llama-3.1-8B.
 - **Embeddings:** BAAI/bge-m3 (~568M ✅), Qwen3-Embedding-0.6B/4B/8B ✅ (không vượt 14B).
 - **Reranker:** bge-reranker-v2-m3 (~568M ✅), Qwen3-Reranker-0.6B/4B/8B ✅.
@@ -194,13 +194,22 @@ questions.jsonl
 ## 8. Ngữ cảnh dự án & trạng thái
 
 - **Kế hoạch triển khai Agentic RAG:** xem `docs/plan_agentic_rag.md` (kế hoạch chi tiết cấp module, milestone, schema, rủi ro). Đây là plan chính thức của dự án — cập nhật khi có thay đổi.
-- **Trạng thái hiện tại:** Đã tải đủ dataset về `data/` (100 ticker × 2015–2025 × consolidated/separate), đã tạo `.gitignore` (bỏ `data/`). Code chưa có — bắt đầu từ ETL (Milestone M0–M2).
+- **Trạng thái hiện tại:** ✅ **M0 xong** (4/8/2026). Dataset đủ trong `data/`, code scaffold dựng xong:
+  - `.venv` + `requirements.txt` (core) + `pyproject.toml` (src layout, pytest) — pandas 3.0.5, openai 2.53.0.
+  - `configs/base.yaml` + `api.yaml` (OpenRouter, model `qwen/qwen3.5-9b`), `.env` (gitignored) chứa key.
+  - `src/vifinqa/`: `constants.py` (unit factors, hằng số), `config.py` (pydantic + YAML + `.env` loader), `loader.py` (load_stocks/load_questions/iter_reports).
+  - `scripts/smoke_test.py` (data OK: 1,012 câu / 100 ticker / 1,973 report / ~97,860 bảng ước lượng), `scripts/test_llm_api.py` (API OK — model trả lời đúng, có reasoning tokens).
+  - `tests/test_loader.py`: 4 test pass.
+  - ⚠️ Qwen3.5-9B dùng **reasoning tokens mặc định** (~266 tokens/câu đơn giản) → cần xử lý chế độ thinking khi viết agent prompt (M5).
+- **✅ M1 xong (4/8/2026)** — ETL toàn corpus:
+  - `etl/numbers.py` (parse số: `.` nghìn, `(x)` âm, `-` rỗng; unit header `Triệu VND`/fallback `Đơn vị tính:`; normalize bỏ dấu cả Đ/đ; period), `etl/parser.py` (split trang, `<table>` 1 dòng, grid expand colspan, find_header_row), `etl/statements.py` (**classify = tiêu đề anchor + structural check**: header "Mã số"/"STT·Chỉ tiêu" hoặc cột mã VAS/bank; negative loại "ngoài bảng"/"ngoài báo cáo"/"Mẫu B02"), `etl/catalog_builder.py`, `scripts/run_etl.py` (checkpoint ticker, 6 workers).
+  - **Output `data/derived/`**: `tables/{report_id}/table_{N}.csv` (146,246 wide tables, giữ chuỗi OCR), `catalog_tables.csv` (178MB, 146K rows — có thể cần tối ưu anchor/header sau), `documents.csv`, `etl_state.json`. Không có lỗi ETL.
+  - BCTC lõi: 10,870 bảng (BS 5,059 / INCOME 2,394 / CF 3,417). Unit: VND 128K, Triệu VND 10K, Đồng VN 727...
+  - Test vàng: HPG (BS [3,4,5], INCOME [6,7], CF [8,9]; LNST 60 = 8.600.550.706.227), VCB ngân hàng (BS "Báo cáo tình hình tài chính" [7,8], INCOME [11,12], CF [13,14]; unit header Triệu VND), VJC ("Lãi tiền gửi" wide table_50 = 208.253.201.298). 39 test pass.
 - **Việc cần làm kế tiếp:**
-  1. Tải dataset ViFinQA từ Hugging Face (questions, code_stock.csv, financial_statements).
-  2. Xác minh câu hỏi kiểm thử của BTC trùng/khác với 1,012 câu HF.
-  3. Khảo sát 2–3 file .txt OCR để nắm cấu trúc thật (markup bảng, marker trang, header, đơn vị).
-  4. Quyết định tech stack (Python, thư viện pandas/polars, framework LLM local — vLLM/transformers), kiểm tra phần cứng (GPU?) so với model 14B.
-  5. Dựng ETL v1 cho 1 công ty mẫu, benchmark thủ công vài câu hỏi.
+  1. **M2 — Facts tier** (3 BCTC lõi, rủi ro cao nhất): `find_item_code_col`, `merge_fragments` (dedupe row "mang sang trang"), `build_asset`, `facts_builder` → `facts/{report_id}_facts.csv` + `facts_all.csv` ≥ 400K dòng; cross-sum validate.
+  2. M3 — retrieval (thêm deps: rank-bm25, sentence-transformers, FlagEmbedding, faiss-cpu).
+  3. Xác minh câu hỏi kiểm thử của BTC trùng/khác với 1,012 câu HF (chờ BTC).
 - **Ràng buộc hạ tầng:** (chưa xác định — cần cập nhật: có GPU/VRAM bao nhiêu? chạy local hay server?)
 - **Việc cuối cùng:** nộp working notes paper mô tả phương pháp.
 

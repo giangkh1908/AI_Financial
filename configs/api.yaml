@@ -1,0 +1,33 @@
+# ============================================================
+# Chạy với API OpenRouter — LLM chính Qwen3.5-9B.
+# API key đọc từ env OPENROUTER_API_KEY (hoặc .env).
+# ============================================================
+paths:
+  data_dir: data
+  derived_dir: data/derived
+  out_dir: data/out
+
+retrieval:
+  k: 10
+  rerank_depth: 100
+  rrf_k: 60
+
+sandbox:
+  timeout: 20
+  max_code_len: 4000
+  max_ast_nodes: 300
+
+answer_abs_tol: 0.01
+step_budget: 10
+
+llm:
+  provider: openrouter
+  base_url: https://openrouter.ai/api/v1
+  model_id: qwen/qwen3.5-9b
+  temperature: 0.0
+  max_tokens: 4096
+  timeout: 60.0
+  retries: 3
+  extra_headers:
+    HTTP-Referer: https://github.com/KimHo-GURU   # optional: định danh nguồn gọi
+    X-Title: ViFinQA-GURU                         # optional: tên app trên OpenRouter

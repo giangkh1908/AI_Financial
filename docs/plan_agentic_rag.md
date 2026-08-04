@@ -17,7 +17,7 @@ Cuộc thi ViFinQA: với mỗi câu hỏi tài chính tiếng Việt (1,012 câ
 - Câu hỏi: 472 câu 1 ticker, **364 câu không ticker** (chỉ tên công ty), 165 câu 3+ ticker; ticker viết thường; câu hard đa bước (ROE tại năm CFO/DT cao nhất giữa nhiều công ty); đơn vị triệu/trăm tỷ/nghìn tỷ đồng.
 
 **Quyết định đã chốt:**
-- LLM **Qwen3.5-9B-Instruct** (`Qwen/Qwen3.5-9B`; Apache 2.0, 9B ≤14B, phát hành 2/3/2026 < 1/6/2026 → hợp lệ; hybrid Gated DeltaNet + Gated Attention, 262K context, tool calling). Giai đoạn đầu dùng **API** (provider mở, OpenAI-compatible), sau thuê GPU chạy local vLLM cùng model — client provider-agnostic.
+- LLM **Qwen3.5-9B-Instruct** (`Qwen/Qwen3.5-9B`; Apache 2.0, 9B ≤14B, phát hành 2/3/2026 < 1/6/2026 → hợp lệ; hybrid Gated DeltaNet + Gated Attention, 262K context, tool calling). Giai đoạn đầu dùng **API OpenRouter** — model ID `qwen/qwen3.5-9b` (đã xác minh có trên OpenRouter 4/8/2026, $0.10/$0.15 per 1M, 262K ctx), sau thuê GPU chạy local vLLM cùng model — client provider-agnostic.
 - Agent: **custom ReAct** (JSON action text-based), không LangGraph/LlamaIndex.
 - **BẮT BUỘC sandbox** chạy pandas_query (subprocess + hạn chế builtins/import + chặn network/file-write + timeout), dùng chung cho tool `run_pandas` và validator đóng gói.
 - Embedding BGE-M3 + reranker bge-reranker-v2-m3 (CPU local). 2 tầng evidence: facts long-format + wide raw.
@@ -60,7 +60,7 @@ D:\GURU\
 │                                       # httpx, openai, pydantic, pydantic-settings, pyyaml, tqdm, pytest
 ├── configs/
 │   ├── base.yaml       # paths, retrieval{k=10, rerank_depth=100}, sandbox{timeout=20}, tolerance=0.01
-│   ├── api.yaml        # provider=openai_compatible, base_url, model=Qwen/Qwen3.5-9B-Instruct
+│   ├── api.yaml        # provider=openrouter, base_url=https://openrouter.ai/api/v1, model=qwen/qwen3.5-9b
 │   └── local_vllm.yaml # provider=vllm, base_url=http://localhost:8000/v1
 ├── src/vifinqa/
 │   ├── config.py  constants.py  loader.py
@@ -128,6 +128,16 @@ Grid giữ nguyên chuỗi OCR (header multi-row nối dọc theo cột), **KHÔ
 **DoD:** `pytest tests/` chạy được (skeleton); smoke in đúng 3 câu, 1 path report, số bảng sơ bộ; model Qwen3.5-9B gọi thử qua API 1 lần thành công (xác minh provider có serve model này — nếu chưa có, báo user để chọn provider khác hoặc fallback Qwen3-8B).
 
 ### M1 — ETL: parser + numbers + wide tables + catalog (2–3 ngày)
+
+**Khảo sát OCR (4/8/2026 — HPG 2018 con, VCB 2022 con, VJC 2018 separate):**
+- `<table>` luôn nằm gọn **1 dòng** (regex `&lt;table&gt;(.*?)&lt;/table&gt;` re.S). HTML-escape cần `html.unescape` (`&#x27;` → `'`).
+- Header cột **chứa đơn vị nhúng vào cell năm**: `31/12/2018 VND`, `2018 VND`, `2018VND` (không space), `31/12/2022Triệu VND` (VCB), `31/12/2018Giá gốc/...VND` (VJC notes). → regex unit ưu tiên `(Nghìn|Triệu|Tỷ)?\s*VND` sau cell năm; fallback dòng `Đơn vị tính:`/`ĐVT:` (4434× VND, 1088× Triệu đồng VN, 607× Đồng VN, 16× tỷ đồng; OCR lỗi "Triệu Đông").
+- CĐKT tách **2–3 `<table>`** (HPG 3, VJC 2), KQKD 1–2 (HPG 2, **row 60 lặp ở 2 fragment** — dedupe theo item_code chỉ ở biên fragment), LCTT 2 (section `colspan` "LƯU CHUYỂN...").
+- Cột mã: HPG/VJC `Mã số` (VAS `\d{1,3}[a-z]?`, có `411a`, `421b`), VCB `STT` (La Mã `A,I,II,...,XII` + số con `1,2,3`). Row label continuation: label trống → mã ở row sau. Row `colspan=N` = section title (TÀI SẢN/NGUỒN VỐN/...), bỏ khi xây facts.
+- `-` = giá trị rỗng/0; `(x)` = âm; `.` = phân cách nghìn; công thức LaTeX trong label `(\( 100 = 110 + ... \))` (giữ nguyên label, không parse).
+- Gold test khớp: HPG LNST 60 = `8.600.550.706.227`; Tổng TS(270) = Tổng NV(440) = `78.223.007.670.925`; VJC "Lãi tiền gửi" (Thu nhập tài chính, bảng notes không mã) = `208.253.201.298` — bảng notes chỉ header `2018VND | 2017VND` → wide tier.
+
+
 **Task & chữ ký hàm:**
 - `etl/parser.py`:
   - `split_pages(text) -> list[Page]` — regex `===== PAGE (\d+) =====`.
