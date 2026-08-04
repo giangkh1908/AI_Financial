@@ -99,3 +99,79 @@ def test_classify_negative_filter():
     )
     anchor = "Báo cáo tình hình tài chính hợp nhất tại ngày 31 tháng 12 năm 2022"
     assert classify_statement(grid, anchor) is None
+
+
+def test_notes_with_sequence_column_no_year_not_statement():
+    # Notes "Số năm khấu hao" (50/25/40) KHÔNG có cột năm — trước đây fallback cột mã
+    # (^\d{1,2}$) nhận nhầm thành BCTC
+    from vifinqa.etl.parser import parse_table_grid
+
+    grid = parse_table_grid(
+        "<table>"
+        "<tr><td>Số năm</td></tr>"
+        "<tr><td>50</td></tr><tr><td>25</td></tr><tr><td>40</td></tr>"
+        "</table>"
+    )
+    anchor = "được ghi nhận vào Báo cáo kết quả hoạt động kinh doanh"
+    assert classify_statement(grid, anchor) is None
+
+
+def test_statement_with_period_label_header_classified():
+    # BCTC dùng "Số cuối năm"/"Số đầu năm" thay ngày tháng (DCM 2025) — không được bỏ sót
+    from vifinqa.etl.parser import parse_table_grid
+
+    grid = parse_table_grid(
+        "<table>"
+        "<tr><td></td><td>TÀI SẢN</td><td>Mã số</td><td>Thuyết minh</td><td>Số cuối năm</td><td>Số đầu năm</td></tr>"
+        "<tr><td>Tiền và các khoản tương đương tiền</td><td></td><td>110</td><td></td><td>1.000</td><td>900</td></tr>"
+        "<tr><td>Hàng tồn kho</td><td></td><td>140</td><td></td><td>2.000</td><td>1.500</td></tr>"
+        "</table>"
+    )
+    anchor = "Bảng cân đối kế toán riêng tại ngày 31 tháng 12 năm 2025"
+    assert classify_statement(grid, anchor) == "balance_sheet"
+
+
+def test_english_statement_classified():
+    # BCTC tiếng Anh (FPT/DBC/VGC 2024-2025): "Balance Sheet" + "Closing/Opening balance"
+    from vifinqa.etl.parser import parse_table_grid
+
+    grid = parse_table_grid(
+        "<table>"
+        "<tr><td></td><td>ASSETS</td><td>Codes</td><td>Notes</td><td>Closing balance</td><td>Opening balance</td></tr>"
+        "<tr><td>A.</td><td>CURRENT ASSETS</td><td>100</td><td></td><td>8,198,590,237,083</td><td>4,283,157,223,963</td></tr>"
+        "<tr><td>I.</td><td>Cash and cash equivalents</td><td>110</td><td>4</td><td>2,062,744,834,148</td><td>720,832,090,017</td></tr>"
+        "<tr><td>II.</td><td>Short-term financial investments</td><td>120</td><td></td><td>4,534,100,000,000</td><td>2,526,500,000,000</td></tr>"
+        "</table>"
+    )
+    anchor = "BALANCE SHEET\nAs at 31 December 2020\nUnit: VND"
+    assert classify_statement(grid, anchor) == "balance_sheet"
+
+
+def test_statement_with_year_and_garbled_header_still_classified():
+    # BCTC thật có cột năm + cột mã (dù header "Mãsố" dính chữ) → vẫn income
+    from vifinqa.etl.parser import parse_table_grid
+
+    grid = parse_table_grid(
+        "<table>"
+        '<tr><td></td><td>Mãsố</td><td>2018 VND</td><td>2017 VND</td></tr>'
+        "<tr><td>Doanh thu thuần</td><td>10</td><td>55.836</td><td>46.161</td></tr>"
+        "<tr><td>Lợi nhuận gộp</td><td>20</td><td>11.670</td><td>10.625</td></tr>"
+        "</table>"
+    )
+    anchor = "Báo cáo kết quả hoạt động kinh doanh hợp nhất cho năm kết thúc ngày 31 tháng 12 năm 2018"
+    assert classify_statement(grid, anchor) == "income"
+
+
+def test_notes_with_year_column_but_no_code_not_statement():
+    # Notes có cột năm nhưng không có mã số ("Lãi tiền gửi") → None
+    from vifinqa.etl.parser import parse_table_grid
+
+    grid = parse_table_grid(
+        "<table>"
+        "<tr><td></td><td>2018VND</td><td>2017VND</td></tr>"
+        "<tr><td>Lãi tiền gửi</td><td>208.253</td><td>69.917</td></tr>"
+        "<tr><td>Lãi chênh lệch tỷ giá</td><td>85.422</td><td>43.977</td></tr>"
+        "</table>"
+    )
+    anchor = "Thu nhập tài chính"
+    assert classify_statement(grid, anchor) is None

@@ -21,8 +21,8 @@ ANCHOR_LINES = 6  # số dòng text trước bảng dùng làm context phân lo�
 
 CATALOG_HEADER = [
     "report_id", "ticker", "year", "report_type", "table_id", "page_no",
-    "unit", "is_statement", "statement", "header_text", "row_labels",
-    "n_rows", "n_cols", "anchor_context",
+    "unit", "unit_factor", "is_statement", "statement", "header_text",
+    "row_labels", "n_rows", "n_cols", "anchor_context",
 ]
 DOC_HEADER = [
     "report_id", "ticker", "year", "report_type", "company_name",
@@ -39,6 +39,7 @@ class CatalogRow:
     table_id: str
     page_no: int | None
     unit: str
+    unit_factor: float
     is_statement: bool
     statement: str
     header_text: str
@@ -51,7 +52,8 @@ class CatalogRow:
         return [
             self.report_id, self.ticker, str(self.year), self.report_type,
             self.table_id, "" if self.page_no is None else str(self.page_no),
-            self.unit, "1" if self.is_statement else "0", self.statement,
+            self.unit, repr(self.unit_factor),
+            "1" if self.is_statement else "0", self.statement,
             self.header_text, self.row_labels,
             str(self.n_rows), str(self.n_cols), self.anchor_context,
         ]
@@ -78,18 +80,21 @@ def write_table_csv(tables_dir: Path, table_id: str, grid: TableGrid) -> None:
 
 
 def header_and_labels(grid: TableGrid, header_idx: int) -> tuple[str, str]:
-    """(header_text, row_labels): header nối dọc theo cột; labels = cột đầu ~10 dòng dữ liệu."""
+    """(header_text, row_labels): header nối dọc theo cột; labels = cột đầu ~10 dòng dữ liệu.
+
+    Bỏ dòng section title (colspan full-width: mọi ô giống hệt nhau, vd "TÀI SẢN"*n)
+    để row_labels chỉ chứa nhãn chỉ tiêu thật.
+    """
     header = grid.rows[header_idx] if header_idx < grid.n_rows else []
     header_text = " | ".join(c for c in header)
     labels = []
     for row in grid.rows[header_idx + 1:]:
-        if not row or not row[0]:
+        if not row or not row[0].strip():
             continue
-        first = row[0]
-        # bỏ dòng section title (colspan — thường là dòng có số cell = n_cols và text in hoa)
-        if len(row) >= grid.n_cols and len(labels) >= 1:
-            pass
-        labels.append(first)
+        # dòng section title: các ô sau expand colspan giống hệt nhau → bỏ
+        if len(set(row)) == 1:
+            continue
+        labels.append(row[0])
         if len(labels) >= 10:
             break
     return header_text, " | ".join(labels)
@@ -118,7 +123,8 @@ def process_report(report: ReportMeta, derived_dir: Path) -> list[CatalogRow]:
             stmt = classify_statement(grid, anchor)
             header_idx = find_header_row(grid)
             header_cells = grid.rows[header_idx] if header_idx < grid.n_rows else []
-            unit_label = detect_unit(header_cells, page.text)[1]
+            # fallback unit giới hạn trong anchor (text trước bảng) — không quét cả trang
+            unit_factor, unit_label = detect_unit(header_cells, anchor)
             header_text, row_labels = header_and_labels(grid, header_idx)
             table_id = f"table_{table_idx}"
             write_table_csv(tables_dir, table_id, grid)
@@ -131,6 +137,7 @@ def process_report(report: ReportMeta, derived_dir: Path) -> list[CatalogRow]:
                     table_id=table_id,
                     page_no=page.page_no,
                     unit=unit_label,
+                    unit_factor=unit_factor,
                     is_statement=stmt is not None,
                     statement=stmt or "",
                     header_text=header_text,
@@ -187,3 +194,27 @@ def build_catalog(reports: list[ReportMeta], stocks: dict[str, str], derived_dir
     write_catalog_csv(all_rows, derived_dir / "catalog_tables.csv")
     write_documents_csv(reports, stocks, derived_dir / "documents.csv")
     return all_rows
+
+
+def merge_catalog_parts(parts_dir: Path, out_path: Path) -> int:
+    """Gộp các phần catalog theo ticker (`catalog_{ticker}.csv`) → catalog_tables.csv.
+
+    Trả số dòng LOGICAL (csv — field có thể chứa newline nên physical line ≠ row).
+    Phần không có → ghi file rỗng kèm header.
+    """
+    parts = sorted(parts_dir.glob("catalog_*.csv"))
+    n_rows = 0
+    with open(out_path, "w", encoding="utf-8", newline="") as out:
+        w = csv.writer(out)
+        if not parts:
+            w.writerow(CATALOG_HEADER)
+            return 0
+        for i, part in enumerate(parts):
+            with open(part, encoding="utf-8", newline="") as pf:
+                for j, row in enumerate(csv.reader(pf)):
+                    if i > 0 and j == 0:
+                        continue  # bỏ header của các phần sau
+                    w.writerow(row)
+                    if i > 0 or j > 0:
+                        n_rows += 1
+    return n_rows

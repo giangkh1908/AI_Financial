@@ -7,10 +7,21 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # D:\GURU (src/vifinqa/config.py → lên 2 cấp: vifinqa → src → GURU)
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Gộp đệ quy: override ghi đè base theo từng key (dict lồng nhau merge sâu)."""
+    out = dict(base)
+    for k, v in override.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
 
 
 def _load_dotenv() -> None:
@@ -41,6 +52,9 @@ class LLMConfig(BaseModel):
     base_url là gốc OpenAI-compatible (vd https://openrouter.ai/api/v1).
     """
 
+    # extra='forbid': key sai chính tả trong YAML phải raise, không bỏ im lặng
+    model_config = ConfigDict(extra="forbid")
+
     provider: str = "openrouter"
     base_url: str = "https://openrouter.ai/api/v1"
     api_key: str = ""          # nếu rỗng → đọc env OPENROUTER_API_KEY
@@ -63,12 +77,16 @@ class LLMConfig(BaseModel):
 
 
 class RetrievalConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     k: int = 10
     rerank_depth: int = 100
     rrf_k: int = 60
 
 
 class SandboxConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     timeout: int = 20
     max_code_len: int = 4000
     max_ast_nodes: int = 300
@@ -76,6 +94,8 @@ class SandboxConfig(BaseModel):
 
 class Config(BaseModel):
     """Cấu hình tổng — gộp base + api/local + env override."""
+
+    model_config = ConfigDict(extra="forbid")
 
     paths: dict[str, Any] = Field(default_factory=dict)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
@@ -117,15 +137,18 @@ class Config(BaseModel):
         return cls(**raw)
 
     @classmethod
-    def load(cls, config_path: Path | None = None) -> "Config":
-        """Load base.yaml rồi chồng config_path (vd api.yaml) lên."""
-        base_path = config_path
+    def load(cls, config_path: Path | None = None, base_path: Path | None = None) -> "Config":
+        """Load base.yaml rồi chồng config_path (vd api.yaml) lên.
+
+        Extra ghi đè base theo từng key (deep merge cho llm/retrieval/sandbox) —
+        base.yaml không được ném bỏ khi override thiếu field. `base_path` cho phép
+        test truyền base tuỳ chỉnh; mặc định configs/base.yaml.
+        """
+        if config_path is None:
+            config_path = ROOT / "configs" / "api.yaml"
         if base_path is None:
-            base_path = ROOT / "configs" / "api.yaml"
-        base = cls.from_yaml(ROOT / "configs" / "base.yaml")
-        extra = cls.from_yaml(base_path)
-        # gộp: extra ghi đè base theo field
-        merged = base.model_copy(deep=True)
-        return merged.model_validate(
-            extra.model_dump(exclude_unset=True),
-        )
+            base_path = ROOT / "configs" / "base.yaml"
+        base = cls.from_yaml(base_path)
+        extra = cls.from_yaml(config_path)
+        merged = _deep_merge(base.model_dump(), extra.model_dump(exclude_unset=True))
+        return cls.model_validate(merged)

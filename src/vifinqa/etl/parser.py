@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 
 from bs4 import BeautifulSoup
 
-from vifinqa.etl.numbers import parse_period_header
+from vifinqa.etl.numbers import is_period_cell
 
 # Marker trang: "===== PAGE 1 ====="
 PAGE_RE = re.compile(r"=====\s*PAGE\s+(\d+)\s*=====")
@@ -82,8 +82,8 @@ def parse_table_grid(table_html: str) -> TableGrid:
 
 
 def find_header_row(grid: TableGrid) -> int:
-    """Chỉ số dòng header: dòng đầu có cell chứa năm/kỳ. Fallback 0."""
+    """Chỉ số dòng header: dòng đầu có cell chứa năm/kỳ (ngày hoặc "Số cuối năm"). Fallback 0."""
     for i, row in enumerate(grid.rows):
-        if any(parse_period_header(c) is not None for c in row):
+        if any(is_period_cell(c) for c in row):
             return i
     return 0

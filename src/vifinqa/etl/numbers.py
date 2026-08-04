@@ -2,9 +2,9 @@
 
 Chuẩn hoá là nền tảng của toàn pipeline: sai đơn vị = sai đáp án.
 Quy ước chung:
-- Số OCR: `.` = phân cách nghìn, `,` = thập phân, `(x)` = âm, `-`/`–` = rỗng/0.
-- Đơn vị: ưu tiên nhúng trong header cột năm (vd `31/12/2022Triệu VND`),
-  fallback dòng `Đơn vị tính:` / `ĐVT:`.
+- Số OCR: `.` = phân cách nghìn, `,` = thập phân, `(x)` hoặc `-x` = âm, `-`/`–` (đơn) = rỗng/0.
+- Đơn vị: ưu tiên nhúng trong header cột năm (vd `31/12/2022Triệu VND`, `2018 Triệu đồng`),
+  fallback dòng `Đơn vị tính:` / `ĐVT:` / `Đơn vị tiền tệ:`.
 - Mọi value chuẩn hoá về VND: `value_vnd = raw_number * factor`.
 """
 
@@ -23,34 +23,55 @@ UNIT_FACTORS: dict[str, float] = {
     "vnd": 1.0,
 }
 
-# Regex đơn vị nhúng trong header cột năm (theo khảo sát: VND / Triệu VND / VND...)
+# Regex đơn vị nhúng trong header cột năm. Khảo sát: "31/12/2018 VND", "2018VND",
+# "31/12/2022Triệu VND" (ngân hàng), "2018 Triệu đồng" (không có chữ VND), "1/1/2018VND".
 _HEADER_UNIT_RE = re.compile(
-    r"(?P<label>(?:Nghìn|Triệu|Tỷ|Trăm)?\s*VND)",
+    r"(?P<label>(?:Nghìn|Triệu|Tỷ|Trăm)?\s*(?:VND|đồng))",
     re.IGNORECASE,
 )
-# Regex dòng đơn vị riêng: "Đơn vị tính: Triệu đồng Việt Nam", "ĐVT: triệu đồng"
+# Regex dòng đơn vị riêng: "Đơn vị tính: Triệu đồng Việt Nam", "ĐVT: triệu đồng",
+# "Đơn vị tiền tệ: Triệu đồng" (chuẩn BCTC).
 _UNIT_LINE_RE = re.compile(
-    r"(?:Đơn\s*vị\s*(?:tính)?\s*[::/]|ĐVT\s*[::/])\s*(?P<label>[^:\n]+)",
+    r"(?:Đơn\s*vị\s*(?:tính|tiền\s*tệ)?\s*[::/]|ĐVT\s*[::/])\s*(?P<label>[^:\n]+)",
     re.IGNORECASE,
 )
 # Regex năm cột: 31/12/2018 | 1/1/2018 | 2018
 _YEAR_DATE_RE = re.compile(r"(?P<d>\d{1,2})\s*/\s*(?P<m>\d{1,2})\s*/\s*(?P<y>\d{4})")
 _YEAR_BARE_RE = re.compile(r"(?<!\d)(?P<y>20\d\d)(?!\d)")
 _RESTATED_RE = re.compile(r"trình\s*bày\s*lại|restated|đã\s*điều\s*chỉnh", re.IGNORECASE)
+# Nhãn kỳ không có số năm (BCTC dùng "Số cuối năm"/"Năm nay"/"Cuối kỳ" thay ngày tháng;
+# BCTC tiếng Anh dùng "Closing balance"/"Opening balance"/"Current year").
+# ⚠️ KHÔNG khớp "Số năm" (bảng khấu hao notes) — chỉ các cụm kỳ rõ ràng.
+_PERIOD_LABEL_RE = re.compile(
+    r"\b(cuoi nam|dau nam|cuoi ky|dau ky|nam nay|nam truoc|nam hien tai|"
+    r"nam ke toan|nam bao cao|ky nay|ky truoc|so cuoi nam|so dau nam|"
+    r"so cuoi ky|so dau ky|cuoi nam nay|dau nam nay|"
+    r"closing balance|opening balance|current year|prior year|this year|"
+    r"last year|current period|prior period|end of year|beginning of year)\b"
+)
+
+
+def is_period_cell(cell: str) -> bool:
+    """True nếu cell là cột kỳ: có ngày/năm parse được HOẶC nhãn kỳ (Số cuối năm...)."""
+    if parse_period_header(cell) is not None:
+        return True
+    return bool(_PERIOD_LABEL_RE.search(normalize_label(cell)))
 
 
 # ---------------------------------------------------------------------------
 # Số
 # ---------------------------------------------------------------------------
 
-_NUMBER_RE = re.compile(r"^\s*\(?\s*(?P<num>[\d.,\s]+)\s*\)?\s*%?\s*$")
+# Số âm: dấu trừ đứng trước (-1.234) hoặc trong ngoặc ((1.234)); % tuỳ chọn.
+_NUMBER_RE = re.compile(r"^\s*(?P<sign>-|–)?\s*\(?\s*(?P<num>[\d.,\s]+)\s*\)?\s*%?\s*$")
 
 
 def parse_vn_number(s: str) -> float | None:
     """Parse 1 ô số OCR → float; trả None nếu không phải số.
 
-    Xử lý: bỏ dấu '.' nghìn, ',' → '.', `(x)` → âm, `-`/`–` → None.
+    Xử lý: bỏ dấu '.' nghìn, ',' → '.', `(x)`/`-x` → âm, `-`/`–` → None.
     - `parse_vn_number("(11.078.921.256)") == -11078921256`
+    - `parse_vn_number("-1.234") == -1234.0`
     - `parse_vn_number("-") is None`
     - `parse_vn_number("4.037") == 4037`   (EPS: nghìn separator)
     """
@@ -65,7 +86,7 @@ def parse_vn_number(s: str) -> float | None:
     num_str = m.group("num")
     if not num_str:
         return None
-    negative = s.startswith("(") and s.endswith(")")
+    negative = bool(m.group("sign")) or (s.startswith("(") and s.endswith(")"))
     # Dấu phân cách: loại '.' (nghìn), ',' (thập phân) → '.'
     if "," in num_str:
         num_str = num_str.replace(".", "").replace(",", ".")
@@ -119,8 +140,8 @@ def unit_factor_from_label(label: str) -> float:
 def detect_unit_in_header(cells: list[str]) -> tuple[float, str] | None:
     """Tìm đơn vị trong các cell header cột năm.
 
-    Vd cell `31/12/2022Triệu VND` → (1e6, "Triệu VND"); `2018 VND` → (1.0, "VND").
-    Trả None nếu không thấy marker VND.
+    Vd `31/12/2022Triệu VND` → (1e6, "Triệu VND"); `2018 VND` → (1.0, "VND");
+    `2018 Triệu đồng` → (1e6, "Triệu đồng"). Trả None nếu không tìm thấy.
     """
     for c in cells:
         m = _HEADER_UNIT_RE.search(c)
@@ -130,9 +151,9 @@ def detect_unit_in_header(cells: list[str]) -> tuple[float, str] | None:
     return None
 
 
-def detect_unit_in_text(page_text: str) -> tuple[float, str] | None:
-    """Tìm dòng đơn vị riêng `Đơn vị tính: ...` / `ĐVT: ...` trong trang."""
-    for m in _UNIT_LINE_RE.finditer(page_text):
+def detect_unit_in_text(context_text: str) -> tuple[float, str] | None:
+    """Tìm dòng đơn vị riêng `Đơn vị tính:` / `ĐVT:` / `Đơn vị tiền tệ:` trong context."""
+    for m in _UNIT_LINE_RE.finditer(context_text):
         label = m.group("label").strip()
         if not label:
             continue
@@ -144,16 +165,18 @@ def detect_unit_in_text(page_text: str) -> tuple[float, str] | None:
     return None
 
 
-def detect_unit(header_cells: list[str], page_text: str = "") -> tuple[float, str]:
-    """Detect đơn vị cho bảng: ưu tiên header cột, fallback dòng đơn vị.
+def detect_unit(header_cells: list[str], context_text: str = "") -> tuple[float, str]:
+    """Detect đơn vị cho bảng: ưu tiên header cột, fallback dòng đơn vị trong context.
 
-    Trả (factor, label); mặc định (1.0, "VND") nếu không tìm thấy.
+    `context_text` = text ngay trước bảng (anchor) — KHÔNG phải cả trang, tránh bảng
+    thứ 2 trên cùng trang thừa hưởng unit của bảng thứ 1. Trả (factor, label);
+    mặc định (1.0, "VND") nếu không tìm thấy.
     """
     hit = detect_unit_in_header(header_cells)
     if hit:
         return hit
-    if page_text:
-        hit = detect_unit_in_text(page_text)
+    if context_text:
+        hit = detect_unit_in_text(context_text)
         if hit:
             return hit
     return 1.0, "VND"
@@ -170,7 +193,7 @@ def parse_period_header(cell: str) -> tuple[str, int | None] | None:
     - `31/12/2018 VND`      → ("year_end", 2018)
     - `1/1/2018 VND`        → ("year_start", 2018)
     - `2018 VND`            → ("flow_year", 2018)
-    - `31/12/2021Triệu VND(trình bày lại)` → ("restated_prev", 2021)
+    - `31/12/2021Triệu VND(trình bày lại)` → ("restated_cur", 2021)  (theo contract plan)
     - `Thuyết minh`, `Mã số` → None
     """
     if cell is None:
@@ -187,14 +210,14 @@ def parse_period_header(cell: str) -> tuple[str, int | None] | None:
         else:
             key = "year_end"
         if restated:
-            key = "restated_prev"
+            key = "restated_cur"
         return key, year
 
     m = _YEAR_BARE_RE.search(body)
     if m:
         key = "flow_year"
         if restated:
-            key = "restated_prev"
+            key = "restated_cur"
         return key, int(m.group("y"))
 
     return None

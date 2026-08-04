@@ -22,6 +22,12 @@ def test_parse_negative_paren():
     assert parse_vn_number("(72.990.493.823)") == -72990493823.0
 
 
+def test_parse_negative_minus_prefix():
+    assert parse_vn_number("-1.234") == -1234.0
+    assert parse_vn_number("-9.278.165") == -9278165.0
+    assert parse_vn_number(" -1.046.320.000.000") == -1046320000000.0
+
+
 def test_parse_dash_is_none():
     assert parse_vn_number("-") is None
     assert parse_vn_number("–") is None
@@ -76,6 +82,13 @@ def test_unit_header_vjc_no_space():
     assert factor == 1.0
 
 
+def test_unit_header_trieu_dong_without_vnd():
+    # Header "2018 Triệu đồng" (không có chữ VND) — trước đây không nhận diện
+    factor, label = detect_unit_in_header(["2018 Triệu đồng", "2017 Triệu đồng"])
+    assert factor == 1e6
+    assert label == "Triệu đồng"
+
+
 def test_unit_factor_variants():
     assert unit_factor_from_label("trieu dong viet nam") == 1e6
     assert unit_factor_from_label("trieu dong") == 1e6
@@ -96,6 +109,15 @@ def test_detect_unit_default_vnd():
     factor, label = detect_unit(["Mã số"], "")
     assert factor == 1.0
     assert label == "VND"
+
+
+def test_detect_unit_tien_te_line():
+    # "Đơn vị tiền tệ: Triệu đồng Việt Nam" — dạng chuẩn BCTC, trước đây regex bỏ sót
+    from vifinqa.etl.numbers import detect_unit_in_text
+
+    factor, label = detect_unit_in_text("Đơn vị tiền tệ: Triệu đồng Việt Nam")
+    assert factor == 1e6
+    assert "Triệu" in label
 
 
 # --- normalize_label ---
@@ -127,7 +149,8 @@ def test_period_flow_year():
 
 
 def test_period_restated():
-    assert parse_period_header("31/12/2021Triệu VND(trình bày lại)") == ("restated_prev", 2021)
+    # Theo contract plan §M1: "(trình bày lại)" → restated_cur
+    assert parse_period_header("31/12/2021Triệu VND(trình bày lại)") == ("restated_cur", 2021)
 
 
 def test_period_non_period_is_none():

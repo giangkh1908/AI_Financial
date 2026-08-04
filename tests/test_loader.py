@@ -41,3 +41,11 @@ def test_infer_report_type():
     assert infer_report_type("AAA_financial_statements_2015_separate") == "separate"
     assert infer_report_type("AAA_financial_statements_2015_aggregated") == "aggregated"
     assert infer_report_type("XYZ_note_01") == "other"
+
+
+def test_infer_report_type_split_suffix():
+    # Report tách phần có hậu tố số: loại nằm ở token giữa, không phải token cuối
+    from vifinqa.loader import infer_report_type
+
+    assert infer_report_type("HDB_financial_statements_2022_separate_1") == "separate"
+    assert infer_report_type("NAB_financial_statements_2022_consolidated_2") == "consolidated"

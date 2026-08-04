@@ -99,7 +99,7 @@ D:\GURU\
 Grid giữ nguyên chuỗi OCR (header multi-row nối dọc theo cột), **KHÔNG parse số**. `N` = số thứ tự `<table>` trong report (1-based).
 
 ### 3.3 Catalog — `data/derived/catalog_tables.csv`
-`report_id, ticker, year, report_type, table_id, page_no, unit, is_statement, statement, header_text, row_labels, n_rows, n_cols, anchor_context` (anchor ≈ 6 dòng text trước bảng — chứa tên mục/đơn vị).
+`report_id, ticker, year, report_type, table_id, page_no, unit, unit_factor, is_statement, statement, header_text, row_labels, n_rows, n_cols, anchor_context` (anchor ≈ 6 dòng text trước bảng — chứa tên mục/đơn vị; `unit_factor` lưu sẵn hệ số VND — M2 dùng trực tiếp, không re-derive).
 
 ### 3.4 Documents — `data/derived/documents.csv`
 `report_id, ticker, year, report_type, company_name, has_consolidated, has_separate`
@@ -131,7 +131,8 @@ Grid giữ nguyên chuỗi OCR (header multi-row nối dọc theo cột), **KHÔ
 
 **Khảo sát OCR (4/8/2026 — HPG 2018 con, VCB 2022 con, VJC 2018 separate):**
 - `<table>` luôn nằm gọn **1 dòng** (regex `&lt;table&gt;(.*?)&lt;/table&gt;` re.S). HTML-escape cần `html.unescape` (`&#x27;` → `'`).
-- Header cột **chứa đơn vị nhúng vào cell năm**: `31/12/2018 VND`, `2018 VND`, `2018VND` (không space), `31/12/2022Triệu VND` (VCB), `31/12/2018Giá gốc/...VND` (VJC notes). → regex unit ưu tiên `(Nghìn|Triệu|Tỷ)?\s*VND` sau cell năm; fallback dòng `Đơn vị tính:`/`ĐVT:` (4434× VND, 1088× Triệu đồng VN, 607× Đồng VN, 16× tỷ đồng; OCR lỗi "Triệu Đông").
+- Header cột **chứa đơn vị nhúng vào cell năm**: `31/12/2018 VND`, `2018 VND`, `2018VND` (không space), `31/12/2022Triệu VND` (VCB), `2018 Triệu đồng` (DCM... — unit không có chữ VND), `31/12/2018Giá gốc/...VND` (VJC notes). → regex unit ưu tiên `(Nghìn|Triệu|Tỷ|Trăm)?\s*(VND|đồng)` sau cell năm; fallback dòng `Đơn vị tính:`/`ĐVT:`/`Đơn vị tiền tệ:` (4434× VND, 1088× Triệu đồng VN, 607× Đồng VN, 16× tỷ đồng; OCR lỗi "Triệu Đông").
+- **Cột kỳ có thể không phải ngày tháng**: một số report (DCM, HHS...) dùng `Số cuối năm`/`Số đầu năm`/`Năm nay`/`Năm trước` thay `31/12/YYYY` → `is_period_cell` chấp nhận cả nhãn kỳ (NHƯNG không khớp "Số năm" khấu hao) để `find_header_row`/structural check không bỏ sót BCTC.
 - CĐKT tách **2–3 `<table>`** (HPG 3, VJC 2), KQKD 1–2 (HPG 2, **row 60 lặp ở 2 fragment** — dedupe theo item_code chỉ ở biên fragment), LCTT 2 (section `colspan` "LƯU CHUYỂN...").
 - Cột mã: HPG/VJC `Mã số` (VAS `\d{1,3}[a-z]?`, có `411a`, `421b`), VCB `STT` (La Mã `A,I,II,...,XII` + số con `1,2,3`). Row label continuation: label trống → mã ở row sau. Row `colspan=N` = section title (TÀI SẢN/NGUỒN VỐN/...), bỏ khi xây facts.
 - `-` = giá trị rỗng/0; `(x)` = âm; `.` = phân cách nghìn; công thức LaTeX trong label `(\( 100 = 110 + ... \))` (giữ nguyên label, không parse).

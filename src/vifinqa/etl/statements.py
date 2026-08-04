@@ -18,20 +18,24 @@ from __future__ import annotations
 
 import re
 
-from vifinqa.etl.numbers import normalize_label
+from vifinqa.etl.numbers import is_period_cell, normalize_label
 from vifinqa.etl.parser import TableGrid, find_header_row
 
 # Tiêu đề BCTC lõi (đã normalize). Ngân hàng dùng "Báo cáo tình hình tài chính" cho CĐKT,
-# "Báo cáo kết quả hoạt động" (thiếu "kinh doanh") cho KQKD.
+# "Báo cáo kết quả hoạt động" (thiếu "kinh doanh") cho KQKD. BCTC tiếng Anh (FPT/DBC/VGC
+# 2024-2025) dùng "Balance Sheet"/"Income Statement"/"Statement of Cash Flows".
 _STMT_TITLE_RE: dict[str, re.Pattern] = {
     "balance_sheet": re.compile(
-        r"bao\s*cao\s*tinh\s*hinh\s*tai\s*chinh|bang\s*can\s*doi\s*ke\s*toan"
+        r"bao\s*cao\s*tinh\s*hinh\s*tai\s*chinh|bang\s*can\s*doi\s*ke\s*toan|"
+        r"balance\s*sheet|statement\s*of\s*financial\s*position"
     ),
     "income": re.compile(
-        r"bao\s*cao\s*ket\s*qua\s*hoat\s*dong(?:\s*kinh\s*doanh)?"
+        r"bao\s*cao\s*ket\s*qua\s*hoat\s*dong(?:\s*kinh\s*doanh)?|"
+        r"income\s*statement|statement\s*of\s*comprehensive\s*income"
     ),
     "cash_flow": re.compile(
-        r"bao\s*cao\s*luu\s*chuyen\s*tien\s*te"
+        r"bao\s*cao\s*luu\s*chuyen\s*tien\s*te|"
+        r"cash\s*flow\s*statement|statement\s*of\s*cash\s*flows"
     ),
 }
 
@@ -46,21 +50,33 @@ _BANK_STT_RE = re.compile(r"^[IVXLC]+$|^[A-Z]$|^\d{1,2}$")
 
 
 def _has_statement_structure(grid: TableGrid) -> bool:
-    """Xác nhận bảng có cấu trúc BCTC: header "Mã số"/"STT·Chỉ tiêu" hoặc cột mã số."""
-    header_idx = find_header_row(grid)
-    if header_idx < grid.n_rows:
-        joined = normalize_label(" ".join(grid.rows[header_idx]))
-        if re.search(r"ma\s*so", joined):                       # Mã số / Mãsố
-            return True
-        if re.search(r"\bstt\b", joined) and re.search(r"chi\s*tieu", joined):
-            return True
+    """Xác nhận bảng có cấu trúc BCTC thật.
 
-    # Fallback: tồn tại cột mà ≥50% ô (không rỗng, khác "-") là mã VAS hoặc STT ngân hàng
-    if grid.n_rows >= 3:
+    BẮT BUỘC có cột năm (header parse được year/date) — loại notes kiểu
+    "Số năm khấu hao" (50/25/40) hay "Nhóm nợ" (1,2,3) vốn KHÔNG có cột năm.
+    Sau đó: header "Mã số"/"STT·Chỉ tiêu" HOẶC cột mã số (VAS/bank) trong vùng dữ liệu.
+    """
+    header_idx = find_header_row(grid)
+    if header_idx >= grid.n_rows:
+        return False
+    header_row = grid.rows[header_idx]
+    # 1) Phải có ít nhất 1 cột kỳ thật (ngày/năm HOẶC "Số cuối năm"/"Năm nay")
+    if not any(is_period_cell(c) for c in header_row):
+        return False
+
+    # 2) Header nhận diện cột mã số (VAS "Mã số"/"Mãsố", bank "STT·Chỉ tiêu", English "Codes")
+    joined = normalize_label(" ".join(header_row))
+    if re.search(r"ma\s*so|codes", joined):
+        return True
+    if re.search(r"\bstt\b", joined) and re.search(r"chi\s*tieu", joined):
+        return True
+
+    # 3) Fallback: tồn tại cột mà ≥50% ô dữ liệu (sau header) là mã VAS hoặc STT ngân hàng
+    if grid.n_rows - (header_idx + 1) >= 3:
         for col in range(grid.n_cols):
             vals = [
                 grid.rows[r][col].strip()
-                for r in range(1, grid.n_rows)
+                for r in range(header_idx + 1, grid.n_rows)
                 if col < len(grid.rows[r])
             ]
             vals = [v for v in vals if v and v != "-"]

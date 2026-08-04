@@ -45,17 +45,17 @@ def load_questions(jsonl_path: Path) -> list[dict]:
 
 
 def infer_report_type(report_id: str) -> str:
-    """Loại báo cáo = token cuối cùng của report_id.
+    """Loại báo cáo = token loại có trong report_id (bất kỳ vị trí).
 
-    vd 'AAA_financial_statements_2015_consolidated' → 'consolidated'.
-    Không khớp các loại đã biết → 'other'.
+    vd 'AAA_financial_statements_2015_consolidated' → 'consolidated';
+    'HDB_financial_statements_2022_separate_1' → 'separate' (report tách phần có hậu tố _1).
+    Không khớp loại đã biết → 'other'.
     """
-    tokens = report_id.split("_")
-    if not tokens:
-        return "other"
-    last = tokens[-1]
     known = {"consolidated", "separate", "aggregated"}
-    return last if last in known else "other"
+    for token in report_id.split("_"):
+        if token in known:
+            return token
+    return "other"
 
 
 def iter_reports(data_dir: Path) -> list[ReportMeta]:
