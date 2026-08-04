@@ -99,6 +99,75 @@ def parse_vn_number(s: str) -> float | None:
     return -val if negative else val
 
 
+def parse_number(s: str, thousands: str = ".", decimal: str = ",") -> float | None:
+    """Parse ô số theo quy ước phân cách đã biết.
+
+    - Việt Nam (mặc định): `.` = nghìn, `,` = thập phân.
+    - English: `thousands=","`, `decimal="."` (vd "8,198,590,237.083" → 8198590237.083).
+    `(x)`/`-x` → âm; `-`/`–` → None.
+    """
+    if s is None:
+        return None
+    s = s.strip().replace(" ", "").replace(" ", "")
+    if not s or s in {"-", "–", "--", "/", "x", "X", "n/a", "N/A"}:
+        return None
+    m = _NUMBER_RE.match(s)
+    if not m:
+        return None
+    num_str = m.group("num")
+    if not num_str:
+        return None
+    negative = bool(m.group("sign")) or (s.startswith("(") and s.endswith(")"))
+    if decimal in num_str:
+        num_str = num_str.replace(thousands, "").replace(decimal, ".")
+    else:
+        num_str = num_str.replace(thousands, "")
+    try:
+        val = float(num_str)
+    except ValueError:
+        return None
+    return -val if negative else val
+
+
+# ---------------------------------------------------------------------------
+# Detect format số: Việt Nam (. nghìn, , thập phân) vs English (, nghìn, . thập phân)
+# Dùng cho BCTC tiếng Anh (FPT/DBC/VGC 2024-2025).
+# ---------------------------------------------------------------------------
+
+_EN_THOUSANDS_RE = re.compile(r"^[+-]?\(?\d{1,3}(,\d{3})+(\.\d+)?\)?%?$")
+_VI_THOUSANDS_RE = re.compile(r"^[+-]?\(?\d{1,3}(\.\d{3})+(,\d+)?\)?%?$")
+
+
+def _clean_num_token(s: str) -> str:
+    """Lấy phần số sạch (bỏ dấu ngoặc, khoảng trắng) để kiểm tra format."""
+    if s is None:
+        return ""
+    s = s.strip().replace(" ", "").replace(" ", "")
+    s = s.strip("()").strip()
+    s = s.lstrip("+-").strip()
+    s = s.rstrip("%")
+    return s
+
+
+def detect_number_format(cells: list[str]) -> str:
+    """Trả 'en' hoặc 'vi' theo đa số ô giá trị.
+
+    BCTC tiếng Anh dùng `,` làm phân cách nghìn ("8,198,590,237,083"); tiếng Việt
+    dùng `.` ("8.198.590.237.083"). Ô có cả 2 dấu thì không mơ hồ (vi: 1.234,56 /
+    en: 1,234.56). Mặc định 'vi' khi không quyết định được.
+    """
+    en = vi = 0
+    for c in cells:
+        tok = _clean_num_token(c)
+        if not tok:
+            continue
+        if _EN_THOUSANDS_RE.match(tok):
+            en += 1
+        elif _VI_THOUSANDS_RE.match(tok):
+            vi += 1
+    return "en" if en > vi else "vi"
+
+
 # ---------------------------------------------------------------------------
 # Đơn vị
 # ---------------------------------------------------------------------------
