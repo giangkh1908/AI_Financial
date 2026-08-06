@@ -19,6 +19,17 @@ pydantic-settings>=2.1
 openai>=1.30
 httpx>=0.27
 
+# --- Retrieval (M3) ---
+# qdrant-client phải khớp version với server image (docker/docker-compose.yml).
+# Mismatch → warning + có thể lỗi serialize. Pin cùng major.minor.
+qdrant-client==1.19.0
+
+# --- Rerank local (TÙY CHỌN — M3.1 đang TẮT, rerank.enabled=false) ---
+# Chỉ cài khi bật rerank local (Qwen3-Reranker). Pipeline phục vụ không cần
+# (lazy import trong pipeline._load_reranker).
+# torch>=2.0
+# transformers>=4.40
+
 # --- Utils ---
 tqdm>=4.66
 

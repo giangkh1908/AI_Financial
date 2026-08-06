@@ -175,7 +175,9 @@ Grid giữ nguyên chuỗi OCR (header multi-row nối dọc theo cột), **KHÔ
 - `facts_all.csv` ≥ 400K dòng; không có report nào 0 facts khi có 3 BCTC lõi.
 
 ### M3 — Retrieval (2 ngày)
-**Task & chữ ký hàm:**
+> ✅ **Đã thực thi (5/8/2026)** — thực tế khác plan gốc: không tách bm25/dense/rrf/rerank thành module riêng mà gom vào **Qdrant Docker** (native hybrid dense HNSW + sparse TF/IDF + `FusionQuery(RRF)` trong 1 query). **Rerank TẮT** (Qwen3-Reranker-0.6B local CPU quá nặng; Cohere API đóng không hợp lệ §5; Jina CC-BY-NC rủi ro). Entity extraction đầy đủ (ticker/company/years/range/report_type/statement hint/unit). `embed_statement_only=true` → chỉ 10,797 bảng BCTC. Build full 100 ticker = 10,616 points / 186s / ~$0.01 / 0 lỗi. Serve 20 câu: coverage 0.95, entity rate 1.0, latency p95 2.14s. 84 test pass. Xem CLAUDE.md §8 cho chi tiết.
+
+**Task & chữ ký hàm (plan gốc — tham khảo):**
 - `retrieval/entity.py`:
   - `extract_tickers(q) -> list[str]` — regex `\bTICKER\b` case-insensitive + trong ngoặc `(VJC)`; sort theo độ dài giảm dần (tránh `VIC` vs `VICOSTONE`).
   - `company_to_ticker(name) -> str|None` — map tên công ty (diacritic-insensitive) → ticker (cho 364 câu không ticker).
@@ -190,8 +192,9 @@ Grid giữ nguyên chuỗi OCR (header multi-row nối dọc theo cột), **KHÔ
 
 **DoD:** entity filter đúng 100% câu có ticker (dev set); trên 40 câu dev: recall@10 ≥ 0.8 (ước lượng, tune sau ở M7).
 
-### M4 — Sandbox chạy pandas (0.5–1 ngày)
-**Task & chữ ký hàm:**
+### M4 — Sandbox chạy pandas (0.5–1 ngày) — ✅ XONG (5/8/2026)
+**Đã triển khai (gộp M4+M5simple+M6 pragmatic để ra submission.zip):** `sandbox/{ast_check,runner,executor}.py` (AST safety, `python -I` runner inject `vn_num` inline + safe builtins, `run_pandas` subprocess+timeout), `codegen/{prompt,llm}.py` (system data contract + few-shot; `LLMClient` Qwen3.5-9B `thinking=False` qua `extra_body={"reasoning":{"enabled":False}}` — fix overflow reasoning; strip import + strip `def vn_num`), `agent/loop.py` (`solve`: retrieve→codegen→retry≤2→fallback), `submission/{builder,validate,pack}.py` (materialize evidence, re-exec validate 100%, ZIP root), `scripts/{run_codegen,build_submission}.py`. Smoke 5: validate 1012/1012, `submission.zip` đúng schema. **105 test pass.** ⚠️ Khoảng trống retrieval: `embed_statement_only=true` bỏ notes tables → nhiều câu answer 0 → cần re-index full 146K trước khi chạy full 1012 (xem CLAUDE.md §8 M4).
+**Task & chữ ký hàm (gốc):**
 - `sandbox/ast_check.py`: `check_code(code) -> (ok, error)` — AST walk: block `Import/ImportFrom`; block call `{open,eval,exec,compile,input,globals,locals,vars,breakpoint,__import__,getattr,setattr,delattr}`; block attribute `{__class__,...}`; block tên module `{os,sys,subprocess,socket,urllib,ctypes,tempfile,shutil,pathlib,io}`; limit node ≤300, len ≤4000.
 - `sandbox/paths.py`: `resolve_evidence_path(csv_path, root) -> Path` — `realpath` nằm trong root + bắt đầu `data/`.
 - `sandbox/executor.py`: `run_pandas(code, evidence: dict[var, csv_path], root) -> {ok, result|error, stdout}` — subprocess `python -I runner` (stdin=code, timeout 20s); runner đọc CSV `dtype=str` → `df`/`dfs`, exec với globals hạn chế (whitelist builtins, `pd/np/math/re/json` inject), code phải gán `result`, in JSON kết quả.

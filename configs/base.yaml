@@ -8,14 +8,53 @@ paths:
   out_dir: data/out
 
 retrieval:
-  k: 10              # top-k bảng trả về cho agent
-  rerank_depth: 100  # số bảng đưa vào reranker
-  rrf_k: 60          # hằng số K trong RRF
+  k: 10                    # top-k bảng trả về cho agent
+  rerank_depth: 100        # số bảng đưa vào hybrid query (dense+sparse)
+  engine: qdrant
+  use_dense: true          # Vector Index Search (HNSW) — kênh CHÍNH
+  use_sparse: true         # Qdrant sparse (TF/BM25 local) — kênh phụ
+  fusion: native           # Qdrant FusionQuery(RRF)
+  statement_bonus: 0.001   # M3.1: giảm từ 0.05 — RRF max ≈0.0328, 0.05 thành hard filter; 0.001 = nudge tie-break (≈3% max RRF)
+  embedding:
+    provider: openrouter   # reuse LLMConfig base_url/key
+    model: baai/bge-m3
+    dense_dim: 1024
+    max_chars: 4000        # M3.1: bump từ 2000 (~1K token, bge-m3 ctx 8192) → phủ nhiều row_labels hơn
+    batch_size: 100        # texts / 1 API call
+    workers: 4             # M3.1: giảm từ 12 — tránh 429 "engine overloaded" từ OpenRouter
+    cache_dir: data/derived/embeddings
+  sparse:
+    max_chars: 6000        # cap text_lex (TF sparse)
+    deep_labels_cap: 0     # 0=off (M3); N>0 đọc wide CSV mở rộng labels
+  qdrant:
+    mode: server           # server (Docker localhost) | local (embedded path, legacy)
+    host: localhost
+    port: 6333
+    path: data/derived/qdrant   # chỉ dùng khi mode=local
+    collection: bctc_tables
+    hnsw_m: 16
+    hnsw_ef_construct: 128
+    hnsw_on_disk: true
+    quantize: true         # INT8 scalar quantization dense
+    sparse_on_disk: true
+    sparse_modifier: idf
+  rerank:
+    enabled: false         # M3.1: tắt — Qwen3-Reranker-0.6B local CPU quá nặng. Bật lại bằng API mở (mxbai/HF endpoint) nếu cần precision.
+    provider: local        # disabled; nếu bật lại: 'local' (self-host) hoặc 'api' (sau này)
+    model: ""              # trống khi disabled (tránh tham chiếu path chết)
+    device: cpu
+    candidates: 50         # top-N hybrid đưa vào rerank
+    top_k: 10
+    max_chars_per_doc: 500
+    batch_size: 16
+    use_instruction: true
+  embed_statement_only: false   # M4: index TOÀN bộ 146K bảng (gồm notes/thuyết minh) — nhiều câu hỏi nhắm notes items (Lãi tiền gửi, cho vay ngành X...); statement-only bỏ sót ~91% bảng
+  min_n_rows: 5            # bỏ bảng junk/TOC
 
 sandbox:
   timeout: 20        # giây, chạy pandas_query
-  max_code_len: 4000
-  max_ast_nodes: 300
+  max_code_len: 8000
+  max_ast_nodes: 800
 
 answer_abs_tol: 0.01  # tolerance đáp án (giả định theo paper)
 step_budget: 10       # số bước tối đa trong ReAct loop

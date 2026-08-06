@@ -64,6 +64,7 @@ class LLMConfig(BaseModel):
     timeout: float = 60.0
     retries: int = 3
     extra_headers: dict[str, str] = Field(default_factory=dict)
+    thinking: bool = False  # Qwen3 reasoning: tắt mặc định cho codegen (tránh overflow max_tokens + rẻ)
 
     def effective_api_key(self) -> str:
         """Ưu tiên api_key trong config; fallback env var."""
@@ -76,20 +77,96 @@ class LLMConfig(BaseModel):
         return ""
 
 
+class EmbeddingConfig(BaseModel):
+    """Cấu hình embedding dense — baai/bge-m3 qua OpenRouter Embeddings API.
+
+    Reuse LLMConfig base_url/api_key/extra_headers (cùng OpenRouter key).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str = "openrouter"
+    model: str = "baai/bge-m3"
+    dense_dim: int = 1024
+    max_chars: int = 2000            # cap text_dense (≈ 512 tokens bge-m3)
+    batch_size: int = 100            # texts / 1 API call
+    workers: int = 12                # số API calls chạy song song (OpenAI client thread-safe)
+    cache_dir: str = "data/derived/embeddings"   # cache .npy per ticker → resume không trả phí lại
+
+
+class SparseConfig(BaseModel):
+    """Cấu hình sparse channel — TF/BM25 weights cục bộ → Qdrant sparse vectors."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_chars: int = 6000            # cap text_lex (TF sparse)
+    deep_labels_cap: int = 0         # 0 = off (M3); N>0 = đọc wide CSV, mở rộng labels đến N
+
+
+class QdrantConfig(BaseModel):
+    """Cấu hình Qdrant local — dense (HNSW) + sparse vectors."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = "data/derived/qdrant"
+    collection: str = "bctc_tables"
+    # M3.1: mặc định server (Docker localhost); 'local' = embedded path legacy (single-process, file lock)
+    mode: str = "server"
+    host: str = "localhost"
+    port: int = 6333
+    # dense index (HNSW) — tường minh
+    hnsw_m: int = 16
+    hnsw_ef_construct: int = 128
+    hnsw_on_disk: bool = True
+    quantize: bool = True            # INT8 scalar quantization dense
+    sparse_on_disk: bool = True
+    sparse_modifier: str = "idf"     # idf | none
+
+
+class RerankConfig(BaseModel):
+    """Cấu hình rerank — Qwen3-Reranker-0.6B chạy local.
+
+    `model` = đường dẫn local (vd `models/Qwen3-Reranker-0.6B`) hoặc HF hub id
+    nếu muốn để transformers tự tải (không khuyến khích — user tự tải vào `models/`).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    provider: str = "local"
+    model: str = "models/Qwen3-Reranker-0.6B"
+    device: str = "cpu"
+    candidates: int = 50             # top-N hybrid đưa vào rerank
+    top_k: int = 10
+    max_chars_per_doc: int = 500     # cắt doc compact (context 32K, 50×500 char OK)
+    batch_size: int = 16             # cross-encoder pairs/batch
+    use_instruction: bool = True     # thêm instruction cho Qwen3-Reranker (+1-5%)
+
+
 class RetrievalConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     k: int = 10
     rerank_depth: int = 100
-    rrf_k: int = 60
+    engine: str = "qdrant"
+    use_dense: bool = True           # Vector Index Search (HNSW) — kênh CHÍNH
+    use_sparse: bool = True          # Qdrant sparse (TF/BM25 local) — kênh phụ
+    fusion: str = "native"           # Qdrant FusionQuery(RRF) — dense + sparse trong 1 query
+    statement_bonus: float = 0.05    # boost mềm khi table.statement == hint (KHÔNG hard filter)
+    embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
+    sparse: SparseConfig = Field(default_factory=SparseConfig)
+    qdrant: QdrantConfig = Field(default_factory=QdrantConfig)
+    rerank: RerankConfig = Field(default_factory=RerankConfig)
+    embed_statement_only: bool = False  # knob: chỉ 10,797 bảng BCTC vs full 146K
+    min_n_rows: int = 5              # bỏ bảng junk/TOC
 
 
 class SandboxConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     timeout: int = 20
-    max_code_len: int = 4000
-    max_ast_nodes: int = 300
+    max_code_len: int = 8000
+    max_ast_nodes: int = 800
 
 
 class Config(BaseModel):

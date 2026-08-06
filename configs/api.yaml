@@ -10,12 +10,11 @@ paths:
 retrieval:
   k: 10
   rerank_depth: 100
-  rrf_k: 60
 
 sandbox:
   timeout: 20
-  max_code_len: 4000
-  max_ast_nodes: 300
+  max_code_len: 8000
+  max_ast_nodes: 800
 
 answer_abs_tol: 0.01
 step_budget: 10
@@ -23,9 +22,9 @@ step_budget: 10
 llm:
   provider: openrouter
   base_url: https://openrouter.ai/api/v1
-  model_id: qwen/qwen3.5-9b
+  model_id: meta-llama/llama-3.1-8b-instruct
   temperature: 0.0
-  max_tokens: 4096
+  max_tokens: 4096   # REVERT (M4b) — cap 2560 làm truncate code → "không trả code" + chặn repair path. 15 câu code-quá-dài nhờ retry rút gọn thành công. Giữ 4096.
   timeout: 60.0
   retries: 3
   extra_headers:
