@@ -55,12 +55,12 @@ def _ensure_tidy(r: SearchResult, derived_dir: Path) -> Path | None:
 
 
 def _build_table_card(
-    var: int,
     r: SearchResult,
     facts_index: FactsIndex | None,
     derived_dir: Path,
+    var_name: str = "df1",
 ) -> dict[str, Any] | None:
-    """Tidy evidence → card cho prompt (columns + sample rows + fact hints)."""
+    """Tidy evidence → card cho prompt (variable name + columns + sample rows + fact hints)."""
     tpath = _ensure_tidy(r, derived_dir)
     if tpath is None:
         return None
@@ -89,7 +89,8 @@ def _build_table_card(
             fact_hints = None
 
     return {
-        "var": var,
+        "var_name": var_name,
+        "table_ref": r.relevant_tables_key(),
         "report_id": r.report_id,
         "position": r.position,
         "statement": r.statement,
@@ -106,17 +107,60 @@ def _evidence_path(report_id: str, table_id: str) -> str:
     return f"data/{report_id}__{table_id}.csv"
 
 
-_DF_REF_RE = re.compile(r"\bdf(\d+)\b")
+_DF_REF_RE = re.compile(r"\bdf\d+\b")  # bare df1/df2 → không hợp lệ ở grader contract
+_DFS_KEY_RE = re.compile(r'''dfs\s*\[\s*["']([^"']+)["']\s*\]''')
+_DFS_DF_N_RE = re.compile(r'''dfs\s*\[\s*["']df\d+["']\s*\]''')  # dfs["df1"] → sai
 
 
-def _df_refs_over(code: str, n: int) -> int | None:
-    """Số df lớn nhất query tham chiếu vượt n (df{n+1}...). None nếu ổn."""
+def _auto_fix_dfs_keys(code: str, table_refs: list[str]) -> str:
+    """Auto-fix `dfs["df1"]` → `dfs["<table_ref>"]` dựa trên thứ tự table_refs.
+
+    Nếu LLM hallucinate `dfs["df1"]`, `dfs["df2"]`, tự động replace bằng table_ref
+    tương ứng (theo thứ tự). Chỉ áp dụng nếu số lượng `dfs["dfN"]` <= số table_refs.
+    """
+    if not code or not table_refs:
+        return code
+    # Tìm tất cả dfs["dfN"]
+    matches = list(_DFS_DF_N_RE.finditer(code))
+    if not matches:
+        return code
+    # Map df1 → table_refs[0], df2 → table_refs[1], ...
+    # Trích xuất số N từ "dfN"
+    def get_df_idx(match: re.Match) -> int:
+        key = match.group(0)  # vd: dfs["df1"]
+        m = re.search(r'df(\d+)', key)
+        return int(m.group(1)) if m else -1
+    df_indices = [(m, get_df_idx(m)) for m in matches]
+    # Chỉ fix nếu indices hợp lệ (1, 2, 3, ...) và <= số table_refs
+    valid_indices = [idx for _, idx in df_indices if 1 <= idx <= len(table_refs)]
+    if len(valid_indices) != len(df_indices):
+        return code  # có index ngoài range → không auto-fix
+    # Replace từ cuối về đầu để không lệch vị trí
+    fixed_code = code
+    for match, idx in sorted(df_indices, key=lambda x: x[0].start(), reverse=True):
+        table_ref = table_refs[idx - 1]  # df1 → index 0
+        fixed_code = fixed_code[:match.start()] + f'dfs["{table_ref}"]' + fixed_code[match.end():]
+    return fixed_code
+
+
+def _bad_refs(code: str, table_refs: set[str], n_tables: int) -> str | None:
+    """Kiểm tra query dùng đúng contract grader BTC. Trả error string nếu sai, None nếu ổn.
+
+    Theo spec BTC: variable names (df1, df2, ...) dùng TRỰC TIẾP trong query.
+    - Cho phép bare `df1`, `df2`, ... (variable names từ evidence).
+    - Cấm `dfs["..."]` (dfs không tồn tại trong grader BTC).
+    """
     if not code:
         return None
-    max_ref = 0
-    for m in _DF_REF_RE.finditer(code):
-        max_ref = max(max_ref, int(m.group(1)))
-    return max_ref if max_ref > n else None
+    # Cấm dfs["..."] — dfs không tồn tại trong grader BTC
+    if _DFS_KEY_RE.search(code):
+        return (
+            "dùng `dfs[\"...\"]` (SAI — dfs KHÔNG TỒN TẠI trong grader BTC). "
+            "PHẢI dùng variable names từ evidence: df1, df2, df3, ... "
+            "VÍ DỤ ĐÚNG: `t = df1` hoặc `t = df2`. "
+            "VÍ DỤ SAI: `t = dfs[\"...\"]` → KeyError/NameError."
+        )
+    return None
 
 
 def solve(
@@ -138,15 +182,19 @@ def solve(
     usable: list[SearchResult] = []
     cards: list[dict[str, Any]] = []
     for i, r in enumerate(results):
-        card = _build_table_card(i + 1, r, facts_index, derived_dir)
+        var_name = f"df{i+1}"  # bare variable name: df1, df2, ...
+        card = _build_table_card(r, facts_index, derived_dir, var_name=var_name)
         if card is not None:
             cards.append(card)
             usable.append(r)
 
-    evidence = {
-        f"df{i+1}": str(_tidy_evidence_path(r.report_id, r.table_id, derived_dir))
-        for i, r in enumerate(usable)
-    }
+    # Evidence dict keyed theo table_ref (khớp grader: dfs["{report_id}|table_N"]).
+    table_refs: set[str] = set()
+    evidence: dict[str, str] = {}
+    for r in usable:
+        key = r.relevant_tables_key()
+        table_refs.add(key)
+        evidence[key] = str(_tidy_evidence_path(r.report_id, r.table_id, derived_dir))
 
     messages = build_messages(question, entities, cards)
     pandas_query = llm.generate_query(messages)
@@ -157,9 +205,11 @@ def solve(
         if not pandas_query:
             exec_error = "LLM không trả code hợp lệ"
             break
-        over = _df_refs_over(pandas_query, len(evidence))
-        if over is not None:
-            exec_error = f'query tham chiếu dfs["df{over}"] nhưng chỉ có dfs["df1"]..dfs["df{len(evidence)}"]'
+        # Auto-fix dfs["df1"] → dfs["<table_ref>"] (nếu LLM hallucinate)
+        pandas_query = _auto_fix_dfs_keys(pandas_query, list(table_refs))
+        bad = _bad_refs(pandas_query, table_refs, len(evidence))
+        if bad is not None:
+            exec_error = bad
             if attempt < max_retries:
                 pandas_query = _repair(llm, messages, pandas_query, exec_error)
             continue
@@ -187,15 +237,26 @@ def solve(
 
 def _repair(llm: LLMClient, base_messages: list[dict], prev_code: str, error: str) -> str:
     """Feed lỗi vào LLM để sinh code sửa."""
+    # Nếu lỗi do dfs["..."], thêm ví dụ cụ thể
+    extra_hint = ""
+    if "dfs[" in error:
+        extra_hint = (
+            "\n\n⚠️ LỖI CỤ THỂ: Bạn đang dùng `dfs[\"...\"]` — SAI vì dfs KHÔNG TỒN TẠI.\n"
+            "BẠN PHẢI dùng variable names từ evidence: df1, df2, df3, ...\n"
+            "VÍ DỤ ĐÚNG: `t = df1` hoặc `t = df2`."
+        )
     followup = base_messages + [
         {"role": "assistant", "content": f"```python\n{prev_code}\n```"},
         {
             "role": "user",
             "content": (
                 f"Code trên lỗi khi chạy:\n{error}\n"
-                "Hãy sửa (giữ quy tắc: truy cập dfs[\"df1\"]..dfs[\"dfN\"] hoặc alias "
-                "`df1 = dfs[\"df1\"]`), dùng vn_num nếu cần parse số, gán result. "
-                "Trả code mới trong ```python ... ```."
+                "Hãy sửa theo đúng contract BTC: dùng variable names từ evidence "
+                "(df1, df2, df3, ...) TRỰC TIẾP trong query. "
+                "TUYỆT ĐỐI CẤM: `dfs[\"...\"]` (dfs không tồn tại).\n"
+                "Chỉ dùng pd + builtins + vn_num (không np/math/re). Gán "
+                "`result = round(<float>, 2)`. Trả code mới trong ```python ... ```."
+                f"{extra_hint}"
             ),
         },
     ]

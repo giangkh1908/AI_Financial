@@ -102,7 +102,7 @@ def _strip_df_reassign(code: str) -> str:
     for node in tree.body:
         if isinstance(node, ast.Assign):
             targets = node.targets
-            is_df = all(isinstance(t, ast.Name) and re.fullmatch(r"df\d+", t.id) for t in targets)
+            is_df = all(isinstance(t, ast.Name) and re.fullmatch(r"df\d*", t.id) for t in targets)
             if is_df and _is_synthetic_df(node.value):
                 removed = True
                 continue

@@ -21,7 +21,7 @@ def _entities() -> Entities:
 
 def _card(var: int = 1) -> dict:
     return {
-        "var": var,
+        "table_ref": "VJC_financial_statements_2018_separate|table_50",
         "report_id": "VJC_financial_statements_2018_separate",
         "position": 50,
         "statement": "",
@@ -47,21 +47,47 @@ def test_build_messages_structure() -> None:
     assert "Mãsố" in sys_text
     assert "ky" in sys_text
     assert "value" in sys_text
-    assert "pd.read_csv" in sys_text and "không" in sys_text.lower()
-    assert "result" in sys_text
+    assert "round" in sys_text  # round 2 decimals
     assert "```python" in sys_text  # few-shot
-    assert 'dfs["df1"]' in sys_text or "dfs[\"df1\"]" in sys_text  # hợp đồng grader
+    # contract grader: 1 bảng → df; N bảng → dfs["<table_ref>"]
+    assert 'dfs["' in sys_text or "dfs[\"" in sys_text
 
 
-def test_build_messages_user_has_question_and_schema() -> None:
+def test_build_messages_user_single_table_uses_df() -> None:
     q = "Lãi tiền gửi năm 2018 của VJC là bao nhiêu triệu đồng?"
     msgs = build_messages(q, _entities(), [_card()])
     user = msgs[1]["content"]
     assert q in user
     assert "2018" in user  # năm
-    assert "df1" in user  # biến bảng
+    # 1 bảng → dùng `df`, KHÔNG nhắc df1/df2
+    assert "df" in user
+    assert "df1" not in user and "df2" not in user
     assert "Lãi tiền gửi" in user  # fact hint
     assert "208253201298" in user  # sample row (value tidy)
+
+
+def test_build_messages_user_multi_table_uses_table_ref() -> None:
+    q = "So sánh LNST 2023 của HPG và VCB?"
+    card2 = _card()
+    card2b = {
+        "table_ref": "VCB_financial_statements_2023_consolidated|table_11",
+        "report_id": "VCB_financial_statements_2023_consolidated",
+        "position": 11,
+        "statement": "income",
+        "unit": "VND",
+        "unit_factor": 1.0,
+        "columns": ["chi_tieu", "Mãsố", "ky", "value"],
+        "fact_hints": [],
+        "sample_rows": "",
+    }
+    msgs = build_messages(q, _entities(), [card2, card2b])
+    user = msgs[1]["content"]
+    # N bảng → liệt kê keys, dùng dfs["<table_ref>"]
+    assert 'dfs["' in user
+    assert "table_50" in user
+    assert "table_11" in user
+    # cấm bare df1/df2 làm biến (chỉ xuất hiện trong câu cấm "KHÔNG dùng bare df1/df2")
+    assert "dfs[\"df1\"]" not in user and "dfs[\"df2\"]" not in user
 
 
 def test_build_messages_empty_cards() -> None:

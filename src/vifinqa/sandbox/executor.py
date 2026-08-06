@@ -1,8 +1,8 @@
 """executor.py — chạy pandas_query trong subprocess cô lập (gọi runner.py).
 
 `run_pandas(code, evidence, root)` → spawn ``python -I runner.py``, truyền payload
-JSON qua stdin (code + evidence {var: abs_path}), thu stdout JSON. Timeout theo
-config sandbox. Evidence paths resolve về tuyệt đối trước khi truyền (runner
+JSON qua stdin (code + evidence {table_ref: abs_path}), thu stdout JSON. Timeout
+theo config sandbox. Evidence paths resolve về tuyệt đối trước khi truyền (runner
 chạy isolated, không nhận path tương đối).
 
 API chính cho codegen loop (agent.loop) và validate (submission).

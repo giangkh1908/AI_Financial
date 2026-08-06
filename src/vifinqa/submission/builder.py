@@ -91,6 +91,42 @@ def _load_unit_factors(derived_dir: Path) -> dict[tuple[str, str], float]:
     return out
 
 
+def _load_start_lines(derived_dir: Path) -> dict[tuple[str, str], int]:
+    """catalog_tables.csv → {(report_id, table_id): start_line}.
+
+    `start_line` = vị trí dòng bắt đầu bảng trong file OCR (dòng vật lý của `<table>`).
+    Dùng để xuất `relevant_tables` theo đặc tả BTC: `report_id|<start_line>`.
+    """
+    catalog = derived_dir / "catalog_tables.csv"
+    out: dict[tuple[str, str], int] = {}
+    if not catalog.exists():
+        return out
+    with catalog.open(encoding="utf-8", newline="") as f:
+        for row in csv.DictReader(f):
+            try:
+                out[(row["report_id"], row["table_id"])] = int(row.get("start_line") or 0)
+            except (KeyError, ValueError):
+                continue
+    return out
+
+
+def _table_ref_to_line(key: str, start_lines: dict[tuple[str, str], int]) -> str:
+    """`report_id|table_N` → `report_id|<start_line>` (format BTC).
+
+    Nếu không tìm được start_line (catalog thiếu) → giữ nguyên `report_id|table_N`.
+    """
+    marker = "|table_"
+    idx = key.find(marker)
+    if idx < 0:
+        return key
+    report_id = key[:idx]
+    table_id = "table_" + key[idx + len(marker):]
+    sl = start_lines.get((report_id, table_id), 0)
+    if sl:
+        return f"{report_id}|{sl}"
+    return key
+
+
 def _parse_evidence_var_and_src(ev: dict) -> tuple[str, str, str]:
     """`csv_path` = `data/{report_id}__{table_id}.csv` → (var, report_id, table_id)."""
     var = ev["variable"]
@@ -131,6 +167,7 @@ def build(results_jsonl: Path, out_dir: Path, derived_dir: Path, questions_path:
 
     # Materialize tidy evidence CSVs (dedupe). Regenerate từ wide nếu tidy thiếu.
     unit_factors = _load_unit_factors(derived_dir)
+    start_lines = _load_start_lines(derived_dir)  # → relevant_tables `rid|<start_line>`
     materialized: set[str] = set()
     regen_count = 0
     for qid, rec in records.items():
@@ -173,10 +210,17 @@ def build(results_jsonl: Path, out_dir: Path, derived_dir: Path, questions_path:
 
     # Sắp xếp theo id + bỏ field nội bộ + nhúng vn_num self-contained
     out_list = []
+    rewritten = 0
     for q in sorted(records.values(), key=lambda r: r["id"]):
         clean = {k: v for k, v in q.items() if k not in _INTERNAL_FIELDS}
         if "pandas_query" in clean:
             clean["pandas_query"] = _with_vn_num(clean["pandas_query"])
+        # relevant_tables: `rid|table_N` → `rid|<start_line>` (đặc tả BTC)
+        rt = clean.get("relevant_tables") or []
+        new_rt = [_table_ref_to_line(k, start_lines) for k in rt]
+        if new_rt != rt:
+            rewritten += 1
+        clean["relevant_tables"] = new_rt
         out_list.append(clean)
 
     (out_dir / "submission.json").write_text(
@@ -186,5 +230,6 @@ def build(results_jsonl: Path, out_dir: Path, derived_dir: Path, questions_path:
         "n": len(out_list),
         "materialized": len(materialized),
         "tidy_regen": regen_count,
+        "relevant_tables_rewritten": rewritten,
         "missing_ids": missing_ids,
     }

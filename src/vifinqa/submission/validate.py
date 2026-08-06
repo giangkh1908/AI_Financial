@@ -19,6 +19,20 @@ from vifinqa.sandbox import check_code, run_pandas
 _TRIVIAL_QUERY = "result = 0.0"
 
 
+def _table_ref_from_csv_path(csv_path: str) -> str:
+    """`data/{report_id}__table_{N}.csv` → `{report_id}|table_N` (khớp grader BTC:
+    dfs keyed theo table_ref, không phải variable)."""
+    name = csv_path.split("/", 1)[-1]  # bỏ prefix "data/"
+    stem = name[:-len(".csv")] if name.endswith(".csv") else name
+    marker = "__table_"
+    idx = stem.find(marker)
+    if idx < 0:
+        raise ValueError(f"không tách được table_id: {csv_path}")
+    report_id = stem[:idx]
+    table_id = "table_" + stem[idx + len(marker):]
+    return f"{report_id}|{table_id}"
+
+
 def _validate_one(rec: dict, root: Path, abs_tol: float, timeout: int, max_code_len: int, max_ast_nodes: int) -> tuple[dict, str]:
     """Trả (verdict, status). status ∈ {ok, crash, mismatch, bad_path}."""
     qid = rec["id"]
@@ -50,7 +64,16 @@ def _validate_one(rec: dict, root: Path, abs_tol: float, timeout: int, max_code_
     if not cok:
         verdict["error"] = f"ast: {cerr}"
         return verdict, "crash"
-    evidence = {ev["variable"]: str(root / ev["csv_path"]) for ev in ev_list}
+    # Evidence keyed theo table_ref (khớp grader BTC), KHÔNG phải variable.
+    # dfs["{report_id}|table_N"] — mirror sandbox.py grader.
+    evidence = {}
+    for ev in ev_list:
+        try:
+            key = _table_ref_from_csv_path(ev["csv_path"])
+        except ValueError as e:
+            verdict["error"] = str(e)
+            return verdict, "bad_path"
+        evidence[key] = str(root / ev["csv_path"])
     out = run_pandas(query, evidence, root, timeout=timeout)
     if not out.get("ok"):
         verdict["error"] = out.get("error", "")

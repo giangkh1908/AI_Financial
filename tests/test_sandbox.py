@@ -82,16 +82,18 @@ def _write_wide_table(path: Path) -> None:
     df.to_csv(path, encoding="utf-8")
 
 
+_TREF = "AAA_financial_statements_2023_consolidated|table_6"
+
+
 def test_run_pandas_filter_by_code(tmp_path: Path) -> None:
     csv = tmp_path / "table_6.csv"
     _write_wide_table(csv)
     code = (
-        "df1 = dfs['df1']\n"
-        "sub = df1[df1['Mã số'] == '60']\n"
+        "sub = df[df['Mã số'] == '60']\n"
         "val = vn_num(sub['2023 VND'].iloc[0]) if len(sub) > 0 else 0.0\n"
         "result = val / 1e9\n"
     )
-    out = run_pandas(code, {"df1": csv}, tmp_path, timeout=15)
+    out = run_pandas(code, {_TREF: csv}, tmp_path, timeout=15)
     assert out["ok"], out.get("error")
     assert abs(out["result"] - 6800.388315081) < 1e-3
 
@@ -100,12 +102,11 @@ def test_run_pandas_negative_parens(tmp_path: Path) -> None:
     csv = tmp_path / "table_6.csv"
     _write_wide_table(csv)
     code = (
-        "df1 = dfs['df1']\n"
-        "sub = df1[df1['Mã số'] == '62']\n"
+        "sub = df[df['Mã số'] == '62']\n"
         "val = vn_num(sub['2023 VND'].iloc[0]) if len(sub) > 0 else 0.0\n"
         "result = val / 1e6\n"
     )
-    out = run_pandas(code, {"df1": csv}, tmp_path, timeout=15)
+    out = run_pandas(code, {_TREF: csv}, tmp_path, timeout=15)
     assert out["ok"], out.get("error")
     assert out["result"] < 0
     assert abs(out["result"] - (-34676.019275)) < 1e-3
@@ -114,7 +115,7 @@ def test_run_pandas_negative_parens(tmp_path: Path) -> None:
 def test_run_pandas_no_result_assigned(tmp_path: Path) -> None:
     csv = tmp_path / "table_6.csv"
     _write_wide_table(csv)
-    out = run_pandas("x = 5", {"df1": csv}, tmp_path, timeout=15)
+    out = run_pandas("x = 5", {_TREF: csv}, tmp_path, timeout=15)
     assert not out["ok"]
     assert "result" in out["error"].lower()
 
@@ -123,12 +124,11 @@ def test_run_pandas_empty_filter_safe(tmp_path: Path) -> None:
     csv = tmp_path / "table_6.csv"
     _write_wide_table(csv)
     code = (
-        "df1 = dfs['df1']\n"
-        "sub = df1[df1['Mã số'] == '999']\n"
+        "sub = df[df['Mã số'] == '999']\n"
         "val = vn_num(sub['2023 VND'].iloc[0]) if len(sub) > 0 else 0.0\n"
         "result = val\n"
     )
-    out = run_pandas(code, {"df1": csv}, tmp_path, timeout=15)
+    out = run_pandas(code, {_TREF: csv}, tmp_path, timeout=15)
     assert out["ok"]
     assert out["result"] == 0.0
 
@@ -142,19 +142,57 @@ def test_run_pandas_single_df_alias(tmp_path: Path) -> None:
         "val = vn_num(sub['2023 VND'].iloc[0]) if len(sub) > 0 else 0.0\n"
         "result = val / 1e9\n"
     )
-    out = run_pandas(code, {"df1": csv}, tmp_path, timeout=15)
+    out = run_pandas(code, {_TREF: csv}, tmp_path, timeout=15)
     assert out["ok"], out.get("error")
     assert abs(out["result"] - 6800.388315081) < 1e-3
 
 
+def test_run_pandas_dfs_table_ref_key(tmp_path: Path) -> None:
+    """N bảng → truy cập `dfs["<table_ref>"]` với key chính xác (contract grader)."""
+    csv = tmp_path / "table_6.csv"
+    _write_wide_table(csv)
+    code = (
+        f't = dfs["{_TREF}"]\n'
+        "sub = t[t['Mã số'] == '60']\n"
+        "val = vn_num(sub['2023 VND'].iloc[0]) if len(sub) > 0 else 0.0\n"
+        "result = val / 1e9\n"
+    )
+    out = run_pandas(code, {_TREF: csv}, tmp_path, timeout=15)
+    assert out["ok"], out.get("error")
+    assert abs(out["result"] - 6800.388315081) < 1e-3
+
+
+def test_run_pandas_bad_dfs_key_keyerror(tmp_path: Path) -> None:
+    """dfs key sai (không có trong evidence) → KeyError (bảo vệ contract grader)."""
+    csv = tmp_path / "table_6.csv"
+    _write_wide_table(csv)
+    code = (
+        't = dfs["AAA_xxx|table_99"]\n'
+        "result = 1.0\n"
+    )
+    out = run_pandas(code, {_TREF: csv}, tmp_path, timeout=15)
+    assert not out["ok"]
+    assert "key" in out["error"].lower() or "dfs" in out["error"].lower()
+
+
+def test_run_pandas_no_np_in_namespace(tmp_path: Path) -> None:
+    """Grader không inject np → code dùng np phải NameError (bảo vệ contract)."""
+    csv = tmp_path / "table_6.csv"
+    _write_wide_table(csv)
+    code = "result = float(np.log(10))"
+    out = run_pandas(code, {_TREF: csv}, tmp_path, timeout=15)
+    assert not out["ok"]
+    assert "np" in out["error"] or "name" in out["error"].lower()
+
+
 def test_run_pandas_bare_df_nameerror(tmp_path: Path) -> None:
-    """Bare `df1` (không qua dfs) → NameError ở grader contract → fail (bảo vệ)."""
+    """Bare `df1` (không qua dfs/df) → NameError ở grader contract → fail (bảo vệ)."""
     csv = tmp_path / "table_6.csv"
     _write_wide_table(csv)
     code = (
         "sub = df1[df1['Mã số'] == '60']\n"
         "result = 1.0\n"
     )
-    out = run_pandas(code, {"df1": csv}, tmp_path, timeout=15)
+    out = run_pandas(code, {_TREF: csv}, tmp_path, timeout=15)
     assert not out["ok"]
     assert "df1" in out["error"] or "name" in out["error"].lower()

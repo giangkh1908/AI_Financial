@@ -1,16 +1,20 @@
 """runner.py — subprocess thực thi pandas_query trong sandbox cô lập.
 
-Đọc stdin JSON: ``{"code": str, "evidence": {var: abs_csv_path}}``.
+Đọc stdin JSON: ``{"code": str, "evidence": {table_ref: abs_csv_path}}``.
 
 Hợp đồng sandbox **khớp grader BTC** (`DSKT-NOWJ/ViFinQA` `answering/sandbox.py`):
-- Mỗi evidence CSV nạp ``pd.read_csv(path, dtype=str, keep_default_na=False, index_col=None)``
-  → cells là chuỗi thô, type-inference tắt, empty = ``''``, **index numeric RangeIndex**
-  (KHÔNG có cột nào thành index).
-- DataFrame đặt vào **dict ``dfs`` keyed theo ``var``** (``dfs["df1"]``, ``dfs["df2"]``...).
-  Khi chỉ có 1 CSV, thêm alias ``df = dfs["df1"]`` (khớp grader: single → ``df``).
-  → Code LLM truy cập ``dfs["df1"]`` (nhiều bảng) hoặc ``df`` (1 bảng). KHÔNG inject
-  bare ``df1``/``df2`` (grader không inject bare → query bare sẽ NameError ở grader).
-- Inject globals: ``pd, np, math, re, json`` + ``vn_num`` (parse số VN) + safe builtins.
+- Mỗi evidence CSV nạp ``pd.read_csv(path, encoding="utf-8-sig", dtype=str,
+  keep_default_na=False, index_col=None)`` → cells là chuỗi thô, type-inference tắt,
+  empty = ``''``, **index numeric RangeIndex** (KHÔNG có cột nào thành index).
+- DataFrame đặt vào **dict ``dfs`` keyed theo ``table_ref``** — ``dfs["{report_id}|table_{N}"]``.
+  Khi chỉ có 1 CSV, thêm alias ``df = dfs[<key đó>]`` (khớp grader: single → ``df``).
+  → Code LLM: 1 bảng dùng ``df``; N bảng dùng ``dfs["<table_ref>"]`` (key phải khớp
+  table_ref được liệt kê trong prompt). Bare ``df1``/``df2`` KHÔNG tồn tại (grader
+  không inject bare) → query bare sẽ NameError.
+- Inject globals: **chỉ ``pd`` + ``vn_num`` (parse số VN) + safe builtins**. KHÔNG inject
+  ``np/math/re/json`` (grader không có → code LLM dùng chúng sẽ NameError ở grader).
+  ``vn_num`` là helper ta tự nhúng (grader không inject, nhưng builder nhúng ``def vn_num``
+  vào đầu query nộp → code self-contained).
 - exec code (code phải gán ``result``).
 - In stdout JSON: ``{"ok": bool, "result": float|null, "error": str|null, "stdout": str}``.
 
@@ -25,7 +29,6 @@ from __future__ import annotations
 
 import builtins
 import json
-import math
 import re
 import sys
 import traceback
@@ -110,31 +113,33 @@ def main() -> int:
         print(json.dumps({"ok": False, "result": None, "error": f"bad payload: {e}", "stdout": ""}))
         return 0
 
-    # Nạp evidence CSV → dict {var: DataFrame} (khớp grader BTC: dfs dict keyed theo var).
-    # Evidence = tidy CSV schema cố định [chi_tieu, Mãsố, ky, value] — đọc default
-    # (index_col=None, dtype=str, keep_default_na=False) để khớp grader BTC. Query
-    # dùng .astype(str) cho cột text, float()/astype(float) cho value → robust.
+    # Nạp evidence CSV → dict {table_ref: DataFrame}. Evidence = tidy CSV schema cố
+    # định [chi_tieu, Mãsố, ky, value] — đọc dtype=str, index_col=None để khớp grader.
     dfs: dict[str, pd.DataFrame] = {}
     try:
-        for var, path in evidence.items():
-            dfs[var] = pd.read_csv(
-                path, dtype=str, keep_default_na=False, index_col=None,
+        for key, path in evidence.items():
+            dfs[key] = pd.read_csv(
+                path, encoding="utf-8-sig", dtype=str, keep_default_na=False, index_col=None,
             )
     except Exception as e:
         print(json.dumps({"ok": False, "result": None, "error": f"load evidence: {e}", "stdout": ""}))
         return 0
 
+    # Grader BTC contract: inject bare variables df1, df2, ... (theo spec BTC:
+    # "variable names dùng TRỰC TIẾP trong pandas_query"). Giữ dfs dict cho tương thích.
+    # KHÔNG có np/math/re/json (grader không inject → code dùng chúng sẽ NameError).
+    # `vn_num` ta inject để codegen dùng được; builder nhúng `def vn_num` vào query nộp
+    # nên grader cũng có (từ code, không phải namespace).
     g: dict = {
         "__builtins__": _SAFE_BUILTINS,
         "pd": pd,
-        "np": np,
-        "math": math,
-        "re": re,
-        "json": json,
         "vn_num": vn_num,
-        "dfs": dfs,  # grader contract: truy cập dfs["df1"], dfs["df2"]...
+        "dfs": dfs,  # giữ lại cho tương thích
     }
-    # Single-CSV alias (khớp grader: 1 bảng → alias `df`).
+    # Inject bare variables df1, df2, ... theo thứ tự evidence (khớp spec BTC)
+    for i, (key, df) in enumerate(dfs.items(), start=1):
+        g[f"df{i}"] = df
+    # Single-CSV alias (1 bảng → alias `df` hoặc `df1`)
     if len(dfs) == 1:
         g["df"] = next(iter(dfs.values()))
 
