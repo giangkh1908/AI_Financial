@@ -67,7 +67,7 @@ def test_retrieval_nested_defaults():
     assert r.embedding.max_chars == 4000     # M3.1: bump từ 2000
     assert r.embedding.workers == 4         # M3.1: giảm từ 12 (tránh 429)
     assert r.sparse.deep_labels_cap == 0
-    assert r.embed_statement_only is True    # M3.1: chỉ 10,797 bảng BCTC
+    assert r.embed_statement_only is False   # M3.2: re-index gồm cả notes (~118K bảng)
     # qdrant server (Docker localhost) mặc định
     assert r.qdrant.mode == "server"
     assert r.qdrant.host == "localhost" and r.qdrant.port == 6333

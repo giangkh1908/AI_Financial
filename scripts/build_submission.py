@@ -45,7 +45,7 @@ def main() -> int:
 
     print(f"[1/3] Build submission.json + data/ → {out_dir}")
     summ = build(results_path, out_dir, derived_dir, questions_path)
-    print(f"      n={summ['n']} materialized={summ['materialized']} missing_ids={len(summ['missing_ids'])}")
+    print(f"      n={summ['n']} materialized={summ['materialized']} tidy_regen={summ.get('tidy_regen', 0)} missing_ids={len(summ['missing_ids'])}")
     if summ["missing_ids"]:
         print(f"      ⚠️ {len(summ['missing_ids'])} câu thiếu → fallback 0.0 (vd: {summ['missing_ids'][:5]})")
 

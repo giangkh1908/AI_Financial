@@ -1,7 +1,15 @@
 """runner.py — subprocess thực thi pandas_query trong sandbox cô lập.
 
 Đọc stdin JSON: ``{"code": str, "evidence": {var: abs_csv_path}}``.
-- Nạp mỗi evidence CSV ``dtype=str, index_col=0`` → DataFrame gán vào biến ``var``.
+
+Hợp đồng sandbox **khớp grader BTC** (`DSKT-NOWJ/ViFinQA` `answering/sandbox.py`):
+- Mỗi evidence CSV nạp ``pd.read_csv(path, dtype=str, keep_default_na=False, index_col=None)``
+  → cells là chuỗi thô, type-inference tắt, empty = ``''``, **index numeric RangeIndex**
+  (KHÔNG có cột nào thành index).
+- DataFrame đặt vào **dict ``dfs`` keyed theo ``var``** (``dfs["df1"]``, ``dfs["df2"]``...).
+  Khi chỉ có 1 CSV, thêm alias ``df = dfs["df1"]`` (khớp grader: single → ``df``).
+  → Code LLM truy cập ``dfs["df1"]`` (nhiều bảng) hoặc ``df`` (1 bảng). KHÔNG inject
+  bare ``df1``/``df2`` (grader không inject bare → query bare sẽ NameError ở grader).
 - Inject globals: ``pd, np, math, re, json`` + ``vn_num`` (parse số VN) + safe builtins.
 - exec code (code phải gán ``result``).
 - In stdout JSON: ``{"ok": bool, "result": float|null, "error": str|null, "stdout": str}``.
@@ -102,14 +110,16 @@ def main() -> int:
         print(json.dumps({"ok": False, "result": None, "error": f"bad payload: {e}", "stdout": ""}))
         return 0
 
-    # Nạp evidence CSV → dict {var: DataFrame}
+    # Nạp evidence CSV → dict {var: DataFrame} (khớp grader BTC: dfs dict keyed theo var).
     # Evidence = tidy CSV schema cố định [chi_tieu, Mãsố, ky, value] — đọc default
-    # (không index_col) để khớp grader BTC. Query dùng .astype(str) cho cột text,
-    # float()/astype(float) cho value → robust với mọi dtype inference.
-    frames: dict[str, pd.DataFrame] = {}
+    # (index_col=None, dtype=str, keep_default_na=False) để khớp grader BTC. Query
+    # dùng .astype(str) cho cột text, float()/astype(float) cho value → robust.
+    dfs: dict[str, pd.DataFrame] = {}
     try:
         for var, path in evidence.items():
-            frames[var] = pd.read_csv(path, dtype=str)
+            dfs[var] = pd.read_csv(
+                path, dtype=str, keep_default_na=False, index_col=None,
+            )
     except Exception as e:
         print(json.dumps({"ok": False, "result": None, "error": f"load evidence: {e}", "stdout": ""}))
         return 0
@@ -122,8 +132,11 @@ def main() -> int:
         "re": re,
         "json": json,
         "vn_num": vn_num,
+        "dfs": dfs,  # grader contract: truy cập dfs["df1"], dfs["df2"]...
     }
-    g.update(frames)
+    # Single-CSV alias (khớp grader: 1 bảng → alias `df`).
+    if len(dfs) == 1:
+        g["df"] = next(iter(dfs.values()))
 
     captured: list[str] = []
     _orig_print = print

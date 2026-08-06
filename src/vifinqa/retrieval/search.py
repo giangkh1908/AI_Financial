@@ -34,14 +34,18 @@ class SearchResult:
     rank: int = field(default=0, compare=False)
 
     def relevant_tables_key(self) -> str:
-        """Đơn vị nộp bài: `report_id|position` (vị trí bảng trong báo cáo)."""
-        return f"{self.report_id}|{self.position}"
+        """Đơn vị nộp bài: `report_id|table_N` — khớp format chuẩn benchmark
+        (DSKT-NOWJ/ViFinQA `common/schemas/table_ref.py`: `make_table_ref` →
+        `f"{doc_name}|table_{table_id}"`, `parse_table_ref` tách bằng "|table_").
+        `position` chính là N trong `table_N` (xem `etl/catalog_builder.py`:
+        `table_id = f"table_{table_idx}"` → `parse_position`)."""
+        return f"{self.report_id}|table_{self.position}"
 
     def compact_doc(self, max_chars: int = 500) -> str:
-        """Text compact cho reranker — report_id|position, statement, header, labels."""
+        """Text compact cho reranker — report_id|table_N, statement, header, labels."""
         stmt = self.statement or "thuyet minh"
         return (
-            f"{self.report_id}|{self.position} | {stmt} | "
+            f"{self.report_id}|table_{self.position} | {stmt} | "
             f"{self.header_text} | {self.row_labels}"[:max_chars]
         )
 

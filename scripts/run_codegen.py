@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import queue
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -56,7 +58,10 @@ def main() -> int:
     ap.add_argument("--out", default=None, help="path results.jsonl (mặc định data/out/results.jsonl)")
     args = ap.parse_args()
 
-    cfg = Config.load(Path(args.config))
+    cfg_path = Path(args.config)
+    if not cfg_path.is_absolute() and not cfg_path.exists():
+        cfg_path = ROOT / "configs" / args.config
+    cfg = Config.load(cfg_path)
     out_dir = cfg.resolved_out_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = Path(args.out) if args.out else out_dir / "results.jsonl"
@@ -80,9 +85,38 @@ def main() -> int:
     n_ok = n_fail = n_retry = 0
     latencies: list[float] = []
 
+    WALL_CAP = float(cfg.sandbox.timeout) * 6.0  # 20s pandas ×6 = 120s/question
+
     def _do(q):
         ts = time.time()
-        rec = solve(q["question"], q["id"], pipeline, facts_index, llm, cfg)
+        qres: queue.Queue = queue.Queue()
+
+        def _worker():
+            try:
+                qres.put(solve(q["question"], q["id"], pipeline, facts_index, llm, cfg))
+            except Exception as e:  # guard lỗi — không brick batch
+                qres.put({"_exc": e})
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        try:
+            rec = qres.get(timeout=WALL_CAP)
+        except queue.Empty:
+            rec = None  # vượt wall-cap → fallback
+        if rec is None:
+            rec = {
+                "id": q["id"], "question": q["question"], "answer": 0.0,
+                "relevant_docs": [], "relevant_tables": [], "evidence": [],
+                "pandas_query": "result = 0.0", "_ok": False,
+                "_error": f"wall-cap timeout {WALL_CAP:.0f}s",
+            }
+        elif isinstance(rec, dict) and "_exc" in rec:
+            rec = {
+                "id": q["id"], "question": q["question"], "answer": 0.0,
+                "relevant_docs": [], "relevant_tables": [], "evidence": [],
+                "pandas_query": "result = 0.0", "_ok": False,
+                "_error": f"crash: {rec['_exc']}",
+            }
         return rec, time.time() - ts
 
     # append mode: ghi từng record ngay khi xong (đồng bộ ghi để an toàn)

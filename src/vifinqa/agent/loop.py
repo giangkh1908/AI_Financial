@@ -10,6 +10,7 @@ csv_path trong record = `data/{report_id}__{table_id}.csv` (flat, builder copy �
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -105,6 +106,19 @@ def _evidence_path(report_id: str, table_id: str) -> str:
     return f"data/{report_id}__{table_id}.csv"
 
 
+_DF_REF_RE = re.compile(r"\bdf(\d+)\b")
+
+
+def _df_refs_over(code: str, n: int) -> int | None:
+    """Số df lớn nhất query tham chiếu vượt n (df{n+1}...). None nếu ổn."""
+    if not code:
+        return None
+    max_ref = 0
+    for m in _DF_REF_RE.finditer(code):
+        max_ref = max(max_ref, int(m.group(1)))
+    return max_ref if max_ref > n else None
+
+
 def solve(
     question: str,
     qid: int,
@@ -112,7 +126,7 @@ def solve(
     facts_index: FactsIndex | None,
     llm: LLMClient,
     cfg,
-    max_retries: int = 2,
+    max_retries: int = 1,
 ) -> dict:
     """Giải 1 câu → record. Fallback answer=0.0 nếu codegen/exec thất bại."""
     derived_dir = cfg.resolved_derived_dir()
@@ -143,6 +157,12 @@ def solve(
         if not pandas_query:
             exec_error = "LLM không trả code hợp lệ"
             break
+        over = _df_refs_over(pandas_query, len(evidence))
+        if over is not None:
+            exec_error = f'query tham chiếu dfs["df{over}"] nhưng chỉ có dfs["df1"]..dfs["df{len(evidence)}"]'
+            if attempt < max_retries:
+                pandas_query = _repair(llm, messages, pandas_query, exec_error)
+            continue
         ok, err = check_code(pandas_query, cfg.sandbox.max_code_len, cfg.sandbox.max_ast_nodes)
         if not ok:
             exec_error = f"ast_check: {err}"
@@ -173,7 +193,8 @@ def _repair(llm: LLMClient, base_messages: list[dict], prev_code: str, error: st
             "role": "user",
             "content": (
                 f"Code trên lỗi khi chạy:\n{error}\n"
-                "Hãy sửa (giữ quy tắc: chỉ dùng df1..dfN, vn_num, gán result). "
+                "Hãy sửa (giữ quy tắc: truy cập dfs[\"df1\"]..dfs[\"dfN\"] hoặc alias "
+                "`df1 = dfs[\"df1\"]`), dùng vn_num nếu cần parse số, gán result. "
                 "Trả code mới trong ```python ... ```."
             ),
         },

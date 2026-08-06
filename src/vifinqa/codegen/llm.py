@@ -139,15 +139,18 @@ class LLMClient:
         self.max_tokens = llm.max_tokens
         self.timeout = llm.timeout
         self.thinking = llm.thinking
+        # SDK max_retries=1: chỉ cho SDK thử lại nhanh 1 lần ở transport, để manual
+        # loop dưới đây là layer retry duy nhất (tránh double-retry chồng nhau gây kẹt
+        # 4×60s+15s backoff mỗi generate_query).
         self._client = OpenAI(
             base_url=llm.base_url,
             api_key=llm.effective_api_key(),
             timeout=llm.timeout,
-            max_retries=llm.retries,
+            max_retries=1,
             default_headers=llm.extra_headers or None,
         )
 
-    def generate_query(self, messages: list[dict], max_retries: int = 4) -> str:
+    def generate_query(self, messages: list[dict], max_retries: int = 2) -> str:
         """Gọi LLM → trả pandas_query string (rỗng nếu lỗi/hỏng)."""
         # Qwen3 reasoning plugin: tắt thinking (cfg.llm.thinking=False mặc định) để
         # tránh reasoning ăn hết max_tokens → content rỗng (overflow đã thấy 4258 tok).
@@ -168,12 +171,12 @@ class LLMClient:
                 last_err = f"{type(e).__name__}: {e}"
                 if attempt == max_retries - 1:
                     break
-                time.sleep((2 ** attempt) + random.uniform(0, 1))
+                time.sleep(2.0 + random.uniform(0, 1))
             except APIStatusError as e:
                 last_err = f"HTTP {e.status_code}: {e}"
                 if attempt == max_retries - 1 or e.status_code not in (429, 500, 502, 503, 504):
                     break
-                time.sleep((2 ** attempt) + random.uniform(0, 1))
+                time.sleep(2.0 + random.uniform(0, 1))
             except Exception as e:
                 last_err = f"{type(e).__name__}: {e}"
                 break

@@ -86,6 +86,7 @@ def test_run_pandas_filter_by_code(tmp_path: Path) -> None:
     csv = tmp_path / "table_6.csv"
     _write_wide_table(csv)
     code = (
+        "df1 = dfs['df1']\n"
         "sub = df1[df1['Mã số'] == '60']\n"
         "val = vn_num(sub['2023 VND'].iloc[0]) if len(sub) > 0 else 0.0\n"
         "result = val / 1e9\n"
@@ -99,6 +100,7 @@ def test_run_pandas_negative_parens(tmp_path: Path) -> None:
     csv = tmp_path / "table_6.csv"
     _write_wide_table(csv)
     code = (
+        "df1 = dfs['df1']\n"
         "sub = df1[df1['Mã số'] == '62']\n"
         "val = vn_num(sub['2023 VND'].iloc[0]) if len(sub) > 0 else 0.0\n"
         "result = val / 1e6\n"
@@ -121,6 +123,7 @@ def test_run_pandas_empty_filter_safe(tmp_path: Path) -> None:
     csv = tmp_path / "table_6.csv"
     _write_wide_table(csv)
     code = (
+        "df1 = dfs['df1']\n"
         "sub = df1[df1['Mã số'] == '999']\n"
         "val = vn_num(sub['2023 VND'].iloc[0]) if len(sub) > 0 else 0.0\n"
         "result = val\n"
@@ -128,3 +131,30 @@ def test_run_pandas_empty_filter_safe(tmp_path: Path) -> None:
     out = run_pandas(code, {"df1": csv}, tmp_path, timeout=15)
     assert out["ok"]
     assert out["result"] == 0.0
+
+
+def test_run_pandas_single_df_alias(tmp_path: Path) -> None:
+    """1 CSV → grader inject alias `df` + `dfs` dict; cả 2 đều truy cập được."""
+    csv = tmp_path / "table_6.csv"
+    _write_wide_table(csv)
+    code = (
+        "sub = df[df['Mã số'] == '60']\n"
+        "val = vn_num(sub['2023 VND'].iloc[0]) if len(sub) > 0 else 0.0\n"
+        "result = val / 1e9\n"
+    )
+    out = run_pandas(code, {"df1": csv}, tmp_path, timeout=15)
+    assert out["ok"], out.get("error")
+    assert abs(out["result"] - 6800.388315081) < 1e-3
+
+
+def test_run_pandas_bare_df_nameerror(tmp_path: Path) -> None:
+    """Bare `df1` (không qua dfs) → NameError ở grader contract → fail (bảo vệ)."""
+    csv = tmp_path / "table_6.csv"
+    _write_wide_table(csv)
+    code = (
+        "sub = df1[df1['Mã số'] == '60']\n"
+        "result = 1.0\n"
+    )
+    out = run_pandas(code, {"df1": csv}, tmp_path, timeout=15)
+    assert not out["ok"]
+    assert "df1" in out["error"] or "name" in out["error"].lower()

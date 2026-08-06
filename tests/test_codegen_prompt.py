@@ -27,9 +27,9 @@ def _card(var: int = 1) -> dict:
         "statement": "",
         "unit": "VND",
         "unit_factor": 1.0,
-        "columns": ["Mã số", "Thuyết minh", "2018 VND", "2017 VND"],
+        "columns": ["chi_tieu", "Mãsố", "ky", "value"],
         "fact_hints": [("50", "Lãi tiền gửi")],
-        "sample_rows": "Lãi tiền gửi | 50 | | 208.253.201.298 | 190.000.000.000",
+        "sample_rows": "Lãi tiền gửi |  | 2018 | 208253201298.0\nLãi tiền gửi |  | 2017 | 190000000000.0",
     }
 
 
@@ -42,11 +42,15 @@ def test_build_messages_structure() -> None:
     assert msgs[0]["role"] == "system"
     assert msgs[1]["role"] == "user"
     sys_text = msgs[0]["content"]
-    # quy tắc cốt lõi có mặt
-    assert "vn_num" in sys_text
+    # schema tidy + quy tắc cốt lõi có mặt
+    assert "chi_tieu" in sys_text
+    assert "Mãsố" in sys_text
+    assert "ky" in sys_text
+    assert "value" in sys_text
     assert "pd.read_csv" in sys_text and "không" in sys_text.lower()
     assert "result" in sys_text
     assert "```python" in sys_text  # few-shot
+    assert 'dfs["df1"]' in sys_text or "dfs[\"df1\"]" in sys_text  # hợp đồng grader
 
 
 def test_build_messages_user_has_question_and_schema() -> None:
@@ -57,7 +61,7 @@ def test_build_messages_user_has_question_and_schema() -> None:
     assert "2018" in user  # năm
     assert "df1" in user  # biến bảng
     assert "Lãi tiền gửi" in user  # fact hint
-    assert "208.253.201.298" in user  # sample row
+    assert "208253201298" in user  # sample row (value tidy)
 
 
 def test_build_messages_empty_cards() -> None:

@@ -22,11 +22,11 @@ step_budget: 10
 llm:
   provider: openrouter
   base_url: https://openrouter.ai/api/v1
-  model_id: meta-llama/llama-3.1-8b-instruct
+  model_id: qwen/qwen3.5-9b
   temperature: 0.0
   max_tokens: 4096   # REVERT (M4b) — cap 2560 làm truncate code → "không trả code" + chặn repair path. 15 câu code-quá-dài nhờ retry rút gọn thành công. Giữ 4096.
-  timeout: 60.0
-  retries: 3
+  timeout: 30.0
+  retries: 1
   extra_headers:
     HTTP-Referer: https://github.com/KimHo-GURU   # optional: định danh nguồn gọi
     X-Title: ViFinQA-GURU                         # optional: tên app trên OpenRouter

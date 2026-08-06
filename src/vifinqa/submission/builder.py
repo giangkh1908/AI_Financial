@@ -1,18 +1,24 @@
 """builder.py — results.jsonl → submission.json + data/ (evidence CSVs materialized).
 
 - Assert đủ câu (map theo questions.jsonl; thiếu → record fallback answer=0.0).
-- Copy wide table gốc (`data/derived/tables/{report_id}/{table_id}.csv`) →
-  `out_dir/data/{report_id}__{table_id}.csv` (flat, dedupe theo path).
+- Materialize **tidy** evidence CSV (`data/derived/evidence/{rid}__{tid}.csv`, schema
+  cố định 4 cột [chi_tieu, Mãsố, ky, value]) → `out_dir/data/{rid}__{tid}.csv` (flat,
+  dedupe theo path). Tidy CSV là đúng schema mà `pandas_query` (sinh bởi codegen) expect;
+  KHÔNG package wide raw (query sẽ KeyError trên tên cột).
+- Nếu tidy CSV thiếu (stale `evidence/` do codegen cũ/interrupt) → regenerate từ wide
+  raw `tables/{rid}/{tid}.csv` qua `wide_csv_to_tidy` với `unit_factor` từ catalog.
 - Ghi `out_dir/submission.json` đúng schema §3.1 (bỏ field nội bộ `_ok/_error`).
 """
 
 from __future__ import annotations
 
+import csv
 import json
 import shutil
 from pathlib import Path
 
 from vifinqa.config import ROOT
+from vifinqa.etl.tidy import wide_csv_to_tidy, write_tidy_csv
 from vifinqa.loader import load_questions
 
 _INTERNAL_FIELDS = {"_ok", "_error"}
@@ -56,12 +62,33 @@ def _with_vn_num(query: str) -> str:
     return _VN_NUM_DEF + "\n\n" + q
 
 
-def _source_table_path(report_id: str, table_id: str, derived_dir: Path) -> Path:
+def _source_tidy_path(report_id: str, table_id: str, derived_dir: Path) -> Path:
+    """Tidy evidence CSV (schema 4 cột) — đúng schema `pandas_query` expect."""
     return derived_dir / "evidence" / f"{report_id}__{table_id}.csv"
+
+
+def _source_wide_path(report_id: str, table_id: str, derived_dir: Path) -> Path:
+    """Wide raw ETL `tables/{report_id}/{table_id}.csv` (fallback regenerate tidy)."""
+    return derived_dir / "tables" / report_id / f"{table_id}.csv"
 
 
 def _flat_name(report_id: str, table_id: str) -> str:
     return f"{report_id}__{table_id}.csv"
+
+
+def _load_unit_factors(derived_dir: Path) -> dict[tuple[str, str], float]:
+    """catalog_tables.csv → {(report_id, table_id): unit_factor}."""
+    catalog = derived_dir / "catalog_tables.csv"
+    out: dict[tuple[str, str], float] = {}
+    if not catalog.exists():
+        return out
+    with catalog.open(encoding="utf-8", newline="") as f:
+        for row in csv.DictReader(f):
+            try:
+                out[(row["report_id"], row["table_id"])] = float(row["unit_factor"] or 1.0)
+            except (KeyError, ValueError):
+                continue
+    return out
 
 
 def _parse_evidence_var_and_src(ev: dict) -> tuple[str, str, str]:
@@ -102,8 +129,10 @@ def build(results_jsonl: Path, out_dir: Path, derived_dir: Path, questions_path:
     questions = load_questions(questions_path)
     missing_ids = [q["id"] for q in questions if q["id"] not in records]
 
-    # Materialize evidence CSVs (dedupe)
+    # Materialize tidy evidence CSVs (dedupe). Regenerate từ wide nếu tidy thiếu.
+    unit_factors = _load_unit_factors(derived_dir)
     materialized: set[str] = set()
+    regen_count = 0
     for qid, rec in records.items():
         new_evidence = []
         for ev in rec.get("evidence", []):
@@ -111,10 +140,20 @@ def build(results_jsonl: Path, out_dir: Path, derived_dir: Path, questions_path:
             flat = _flat_name(report_id, table_id)
             dst = data_dir / flat
             if flat not in materialized:
-                src = _source_table_path(report_id, table_id, derived_dir)
-                if not src.exists():
-                    raise FileNotFoundError(f"thiếu wide table gốc: {src}")
-                shutil.copyfile(src, dst)
+                tidy = _source_tidy_path(report_id, table_id, derived_dir)
+                if not tidy.exists():
+                    # Regenerate tidy từ wide raw (evidence/ stale do codegen cũ).
+                    wide = _source_wide_path(report_id, table_id, derived_dir)
+                    if not wide.exists():
+                        raise FileNotFoundError(f"thiếu wide raw để regenerate tidy: {wide}")
+                    uf = unit_factors.get((report_id, table_id), 1.0)
+                    tidy_df = wide_csv_to_tidy(wide, uf)
+                    tidy.parent.mkdir(parents=True, exist_ok=True)
+                    write_tidy_csv(tidy_df, tidy)  # rỗng → ghi header-only (query → 0.0)
+                    regen_count += 1
+                    if tidy_df.empty:
+                        print(f"   ⚠️ wide→tidy rỗng (header-only): {wide.name}")
+                shutil.copyfile(tidy, dst)
                 materialized.add(flat)
             new_evidence.append({"variable": var, "csv_path": f"data/{flat}"})
         rec["evidence"] = new_evidence
@@ -146,5 +185,6 @@ def build(results_jsonl: Path, out_dir: Path, derived_dir: Path, questions_path:
     return {
         "n": len(out_list),
         "materialized": len(materialized),
+        "tidy_regen": regen_count,
         "missing_ids": missing_ids,
     }
