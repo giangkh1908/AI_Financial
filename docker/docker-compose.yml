@@ -11,5 +11,11 @@ services:
       - "6333:6333"   # REST + gRPC
       - "6334:6334"   # dashboard
     volumes:
-      - ../data/derived/qdrant:/qdrant/storage
+      # Named volume (không bind mount) — bind mount Windows gây lỗi optimizer
+      # "Permission denied (os error 13)" khi rename segment (6/8/2026). Named volume
+      # nằm trong ext4 của Docker VM → rename hoạt động bình thường.
+      - qdrant_storage:/qdrant/storage
     restart: unless-stopped
+
+volumes:
+  qdrant_storage:

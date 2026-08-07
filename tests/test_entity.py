@@ -124,3 +124,13 @@ def test_extract_entities_compose():
 @pytest.mark.skipif(not QUESTIONS.exists(), reason="thiếu data/questions/questions.jsonl")
 def test_questions_file_present():
     assert len(_load_questions()) >= 1010
+
+
+def test_no_false_positive_substring_cross_word():
+    """'tổng tài sản bình quân' → 'san binh quan' chứa 'an binh' nhưng KHÔNG match ABB."""
+    cmap = load_company_map(STOCKS)
+    q = ("Trong giai đoạn 2021–2024 của HPG, xét các năm mà chênh lệch giữa lợi nhuận sau thuế "
+         "và lưu chuyển tiền thuần từ hoạt động kinh doanh chia cho tổng tài sản bình quân của "
+         "năm đó thấp hơn mức trung vị của cả giai đoạn.")
+    e = extract_entities(q, cmap)
+    assert e.tickers == frozenset({"HPG"}), f"ABB bị match nhầm qua 'an binh' trong 'san binh quan': {e.tickers}"

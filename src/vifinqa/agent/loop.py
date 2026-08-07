@@ -196,6 +196,14 @@ def solve(
         table_refs.add(key)
         evidence[key] = str(_tidy_evidence_path(r.report_id, r.table_id, derived_dir))
 
+    # Short-circuit: không có bảng truy hồi → fallback 0.0 ngay, không gọi LLM (tiết
+    # kiệm ~120s/câu vô ích — xem phân tích fail: 26/470 câu wallcap có evidence=0).
+    if not usable:
+        return _make_record(
+            qid, question, [], entities, "result = 0.0", 0.0,
+            f"retrieval: không có bảng truy hồi ({len(results)} kết quả, 0 khả dụng)",
+        )
+
     messages = build_messages(question, entities, cards)
     pandas_query = llm.generate_query(messages)
 

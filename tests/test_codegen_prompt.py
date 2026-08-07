@@ -49,8 +49,9 @@ def test_build_messages_structure() -> None:
     assert "value" in sys_text
     assert "round" in sys_text  # round 2 decimals
     assert "```python" in sys_text  # few-shot
-    # contract grader: 1 bảng → df; N bảng → dfs["<table_ref>"]
-    assert 'dfs["' in sys_text or "dfs[\"" in sys_text
+    # contract grader (bare variables): nhắc df1 + CẤM dfs["..."]
+    assert "df1" in sys_text
+    assert 'dfs["' not in sys_text or "CẤM" in sys_text
 
 
 def test_build_messages_user_single_table_uses_df() -> None:
@@ -59,9 +60,9 @@ def test_build_messages_user_single_table_uses_df() -> None:
     user = msgs[1]["content"]
     assert q in user
     assert "2018" in user  # năm
-    # 1 bảng → dùng `df`, KHÔNG nhắc df1/df2
-    assert "df" in user
-    assert "df1" not in user and "df2" not in user
+    # bare variables: 1 bảng → dùng `df1`, CẤM dfs["..."]
+    assert "df1" in user
+    assert "CẤM" in user and "dfs" in user  # có quy tắc cấm dfs
     assert "Lãi tiền gửi" in user  # fact hint
     assert "208253201298" in user  # sample row (value tidy)
 
@@ -82,12 +83,11 @@ def test_build_messages_user_multi_table_uses_table_ref() -> None:
     }
     msgs = build_messages(q, _entities(), [card2, card2b])
     user = msgs[1]["content"]
-    # N bảng → liệt kê keys, dùng dfs["<table_ref>"]
-    assert 'dfs["' in user
+    # N bảng → liệt kê bare variables df1, df2 + CẤM dfs["<table_ref>"]
+    assert "df1" in user and "df2" in user
     assert "table_50" in user
     assert "table_11" in user
-    # cấm bare df1/df2 làm biến (chỉ xuất hiện trong câu cấm "KHÔNG dùng bare df1/df2")
-    assert "dfs[\"df1\"]" not in user and "dfs[\"df2\"]" not in user
+    assert "CẤM" in user and "dfs" in user
 
 
 def test_build_messages_empty_cards() -> None:

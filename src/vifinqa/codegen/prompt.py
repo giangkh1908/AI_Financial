@@ -53,8 +53,23 @@ SCHEMA mỗi bảng (đúng 4 cột, theo thứ tự):
   - "value": giá trị dạng chuỗi (dtype=str) → parse bằng `float()` hoặc `vn_num()`,
     đơn vị VNĐ (đã chuẩn hoá).
 
+MÃ SỐ VAS THƯỜNG GẶP (CHỈ LÀ GỢI Ý — mã có thể KHÁC nhau giữa công ty/ngân hàng/chứng khoán,
+CHỈ DÙNG KHI bạn chắc chắn mã đó thật sự tồn tại trong bảng. LABEL "chi_tieu" mới là chuẩn đáng tin):
+  Bảng cân đối kế toán (mã 100-270): 100 Tổng tài sản ngắn hạn, 120 Hàng tồn kho, 270 Tổng cộng tài sản,
+  300 Nợ phải trả, 400 Vốn chủ sở hữu, 410 Vốn góp, 421 Lợi nhuận sau thuế chưa phân phối, 440 Tổng cộng nguồn vốn.
+  Kết quả kinh doanh (mã 01-60): 01 Doanh thu bán hàng, 10 Doanh thu thuần, 11 Giá vốn hàng bán, 20 Lợi nhuận gộp,
+  21 Doanh thu tài chính, 22 Chi phí tài chính (trong đó: 23 Chi phí lãi vay), 24 Chi phí bán hàng, 25 Chi phí quản lý
+  doanh nghiệp, 30 Lợi nhuận từ HĐKD, 50 Lợi nhuận trước thuế, 60 Lợi nhuận sau thuế, 61 LNST của cổ đông công ty mẹ.
+  Lưu chuyển tiền tệ (mã dòng tiền): 20 LCT thuần từ HĐKD (MỘT SỐ công ty dùng 10), 30 LCT từ HĐĐT, 40 LCT từ HĐTC,
+  50 LCT thuần trong năm, 60 Tiền đầu kỳ, 70 Tiền cuối kỳ.
+  → KHÔNG bịa mã số. Nếu không chắc mã nào đúng, hãy dùng LABEL "chi_tieu" (str.contains) — đây là cách
+   đáng tin nhất. Mã số chỉ dùng khi bạn thấy rõ nó trong bảng.
+
 QUY TẮC BẮT BUỘC:
 1. Truy cập bảng: Dùng CHÍNH XÁC variable names từ evidence (df1, df2, df3, ...).
+   ⚠️ LUÔN tìm metric ở TẤT CẢ các bảng evidence (df1, df2, ..., df10) — một báo cáo (BS/CF/income)
+   có thể bị tách thành NHIỀU bảng, metric cần nằm ở bảng bất kỳ, KHÔNG chỉ df1. Nếu chỉ tìm df1
+   mà không thấy, PHẢI try các bảng còn lại trước khi kết luận `result = 0.0`.
    TUYỆT ĐỐI CẤM tạo/gán lại DataFrame (`df1 = pd.DataFrame(...)`).
    Chỉ ĐỌC (lọc, chọn cột, tính toán). Có thể gán alias tạm `t = df1`.
    TUYỆT ĐỐI CẤM `dfs["..."]` (dfs không tồn tại).
@@ -67,11 +82,19 @@ QUY TẮC BẮT BUỘC:
 4. Lấy value: `float(sub["value"].iloc[0])` (hoặc `vn_num(sub["value"].iloc[0])`).
    Cột "value" là chuỗi → LUÔN ép float trước khi tính toán.
 5. Kiểm tra rỗng: `if len(sub) == 0: result = 0.0`.
-6. Đổi đơn vị: value tính bằng VNĐ. "triệu đồng"→/1e6; "tỷ đồng"→/1e9; "nghìn đồng"→/1e3.
-7. Tránh nhầm chỉ tiêu cha/con — ưu tiên khớp "Mãsố" nếu có.
-8. Cuối cùng gán `result = round(<float>, 2)`. KHÔNG print. KHÔNG round trung gian.
-9. KHÔNG viết comment (`# ...`) trong code — code ngắn gọn, chỉ có logic. Comment làm
-   đầy token và dễ cắt code. Chỉ trả code trong khối ```python ... ```, không giải thích."""
+6. ⚠️ ĐƠN VỊ — QUAN TRỌNG: Cột "value" LUÔN ở đơn vị VNĐ (đã chuẩn hoá từ bảng gốc).
+   Đơn vị báo cáo gốc (triệu/tỷ/nghìn) KHÔNG quan trọng — đứng đổi đơn vị dựa trên bảng.
+   LUÔN đổi theo ĐƠN VỊ CÂU HỎI: câu hỏi "tỷ đồng"→/1e9, "triệu đồng"→/1e6, "nghìn đồng"→/1e3,
+   VNĐ trực tiếp→không đổi. Nếu đơn vị câu hỏi là "triệu đồng", bắt buộc `value / 1e6` cho ra
+   kết quả như con số in trên báo cáo gốc (số nhỏ hợp lý).
+7. ⚠️ FALLBACK BẮT BUỘC: Nếu lọc theo "Mãsố" trả về RỖNG (hoặc mã bạn định dùng KHÔNG CÓ trong
+   bảng), PHẢI tự động thử lại tìm theo "chi_tieu" (str.contains, case=False). CHỈ khi cả mã lẫn
+   label đều không tìm thấy mới `result = 0.0`. KHÔNG bịa mã số không có trong bảng; ưu tiên dùng
+   mã đã liệt kê ở trên, ngược lại search theo tên chỉ tiêu.
+8. Tránh nhầm chỉ tiêu cha/con — ưu tiên khớp "Mãsố" nếu có, nhưng luôn có fallback label.
+9. Cuối cùng gán `result = round(<float>, 2)`. KHÔNG print. KHÔNG round trung gian.
+10. KHÔNG viết comment (`# ...`) trong code — code ngắn gọn, chỉ có logic. Chỉ trả code trong khối
+    ```python ... ```, không giải thích, không kèm code cũ."""
 
 _FEW_SHOT = """
 VÍ DỤ 1 — 1 bảng (variable=df1), tra cứu + đổi đơn vị:
@@ -112,8 +135,10 @@ def _format_table_card(card: dict) -> str:
     var_name = card.get("var_name", card["table_ref"])
     lines = [
         f'{var_name} = {card["report_id"]} | bảng {card["position"]} | {card["statement"] or "thuyết minh"}',
-        f"  schema: cột {card['columns']} — value chuỗi (dtype=str), đơn vị VNĐ (đã chuẩn hoá)",
-        f"  gốc đơn vị báo cáo: {card['unit'] or 'VND'} (unit_factor={card['unit_factor']})",
+        f"  schema: cột {card['columns']} — value chuỗi (dtype=str)",
+        f"  ⚠️ value đã CHUẨN HOÁ về đơn vị VNĐ. Đơn vị báo cáo gốc {card['unit'] or 'VND'} "
+        f"(unit_factor={card['unit_factor']}) CHỈ ĐỂ THAM KHẢO — KHÔNG dùng factor này để quyết định "
+        f"có đổi đơn vị hay không. LUÔN đổi theo ĐƠN VỊ TRONG CÂU HỎI.",
     ]
     if card.get("fact_hints"):
         hints = "; ".join(f"{c} = {lab}" for c, lab in card["fact_hints"][:25])

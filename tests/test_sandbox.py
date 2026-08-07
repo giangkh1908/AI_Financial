@@ -185,8 +185,8 @@ def test_run_pandas_no_np_in_namespace(tmp_path: Path) -> None:
     assert "np" in out["error"] or "name" in out["error"].lower()
 
 
-def test_run_pandas_bare_df_nameerror(tmp_path: Path) -> None:
-    """Bare `df1` (không qua dfs/df) → NameError ở grader contract → fail (bảo vệ)."""
+def test_run_pandas_bare_df_ok(tmp_path: Path) -> None:
+    """Bare `df1` (theo evidence variable thứ tự) → chạy được (contract bare variables)."""
     csv = tmp_path / "table_6.csv"
     _write_wide_table(csv)
     code = (
@@ -194,5 +194,5 @@ def test_run_pandas_bare_df_nameerror(tmp_path: Path) -> None:
         "result = 1.0\n"
     )
     out = run_pandas(code, {_TREF: csv}, tmp_path, timeout=15)
-    assert not out["ok"]
-    assert "df1" in out["error"] or "name" in out["error"].lower()
+    assert out["ok"], out.get("error")
+    assert out["result"] == 1.0

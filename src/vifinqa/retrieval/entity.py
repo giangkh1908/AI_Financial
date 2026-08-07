@@ -173,15 +173,17 @@ def extract_tickers(question: str, cmap: CompanyMap) -> tuple[frozenset[str], di
     matched: dict[str, str] = {}
     spans: list[tuple[int, int]] = []  # span của company-name/alias → che bare ticker bên trong
 
-    # 1) company-name match (longest-first) — span đè bare ticker
+    # 1) company-name match (longest-first) — span đè bare ticker.
+    #    Word-boundary (KHÔNG dùng q.find raw): `q.find` match xuyên biên từ —
+    #    "tổng tài sản bình quân" → "san binh quan" chứa "an binh" => false-positive ABB.
     for key, ticker in cmap.keys_norm:
         if ticker in tickers:
             continue
-        i = q.find(key)
-        if i >= 0:
+        m = re.search(r"(?<![a-z0-9])" + re.escape(key) + r"(?![a-z0-9])", q)
+        if m:
             tickers.add(ticker)
             matched[ticker] = key
-            spans.append((i, i + len(key)))
+            spans.append(m.span())
 
     # 2) alias match (word-ish)
     for key, ticker in cmap.aliases_norm.items():

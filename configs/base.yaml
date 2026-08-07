@@ -39,13 +39,13 @@ retrieval:
     sparse_on_disk: true
     sparse_modifier: idf
   rerank:
-    enabled: false         # M3.1: tắt — Qwen3-Reranker-0.6B local CPU quá nặng. Bật lại bằng API mở (mxbai/HF endpoint) nếu cần precision.
+    enabled: false         # 8/8 test xong: VN-reranker GPU chậm (~5.8s/câu) + gây regress (id 2 timeout, 3/9 đổi sai) và không sửa được zeros (ETL unit / retrieval). Tắt.
     provider: local        # disabled; nếu bật lại: 'local' (self-host) hoặc 'api' (sau này)
-    model: ""              # trống khi disabled (tránh tham chiếu path chết)
-    device: cpu
-    candidates: 50         # top-N hybrid đưa vào rerank
+    model: "AITeamVN/Vietnamese_Reranker"   # VN-tuned (base bge-v2-m3), Apache-2.0, tốt nhất tiếng Việt
+    device: cuda
+    candidates: 20         # rerank top-20 (bảng đúng thường trong top-20 hybrid); giảm candidates → nhanh hơn
     top_k: 10
-    max_chars_per_doc: 500
+    max_chars_per_doc: 300  # chuỗi ngắn → inference nhanh hơn trên GPU yếu
     batch_size: 16
     use_instruction: true
   embed_statement_only: false   # M4: index TOÀN bộ 146K bảng (gồm notes/thuyết minh) — nhiều câu hỏi nhắm notes items (Lãi tiền gửi, cho vay ngành X...); statement-only bỏ sót ~91% bảng

@@ -10,9 +10,11 @@ Reuse cfg.llm (OpenAI client, base_url, model_id, temperature, max_tokens, timeo
 from __future__ import annotations
 
 import ast
+import io
 import random
 import re
 import time
+import tokenize
 
 from openai import OpenAI, APIStatusError, APITimeoutError, APIConnectionError
 
@@ -114,6 +116,41 @@ def _strip_df_reassign(code: str) -> str:
     return ast.unparse(tree)
 
 
+class _CommentStripper:
+    """Bỏ comment (`# ...`) nhưng giữ `#` bên trong string literal.
+
+    Rebuild theo dòng (không dùng untokenize — untokenize giữ nguyên khoảng trắng cũ
+    sau khi xoá comment → chèn khoảng trắng khổng lồ, phá indent/syntax). Giữ nguyên
+    leading whitespace (indent), bỏ comment full-line và trailing comment, bỏ dòng rỗng.
+    Dùng `tokenize` per-line để không phá chuỗi literal chứa `#`.
+    """
+
+    @staticmethod
+    def strip(code: str) -> str:
+        if not code:
+            return code
+        out: list[str] = []
+        for line in code.splitlines():
+            if not line.strip():
+                continue  # bỏ dòng rỗng (không cần thiết về mặt cú pháp)
+            if line.lstrip().startswith("#"):
+                continue  # bỏ nguyên dòng comment
+            try:
+                toks = list(tokenize.generate_tokens(io.StringIO(line).readline))
+                cut = -1
+                for t in toks:
+                    if t.type == tokenize.COMMENT:
+                        cut = t.start[1]
+                        break
+                if cut >= 0:
+                    line = line[:cut].rstrip()
+            except Exception:
+                pass  # tokenize lỗi (cú pháp cắt giữa) → giữ nguyên dòng
+            if line.strip():
+                out.append(line)
+        return "\n".join(out)
+
+
 def _extract_code(text: str) -> str:
     """Trích code pandas từ output LLM (strip think, lấy fence cuối, bỏ import/def giả)."""
     if not text:
@@ -122,10 +159,14 @@ def _extract_code(text: str) -> str:
     fences = _FENCE_RE.findall(cleaned)
     if fences:
         # Lấy fence cuối (LLM có thể kèm giải thích trước code).
-        return _strip_df_reassign(_strip_vn_num_def(_strip_imports(fences[-1].strip())))
+        return _CommentStripper.strip(
+            _strip_df_reassign(_strip_vn_num_def(_strip_imports(fences[-1].strip())))
+        )
     # Không có fence: nếu toàn văn nhìn như code (có `result =`), trả nguyên.
     if "result" in cleaned and "\n" in cleaned:
-        return _strip_df_reassign(_strip_vn_num_def(_strip_imports(cleaned.strip())))
+        return _CommentStripper.strip(
+            _strip_df_reassign(_strip_vn_num_def(_strip_imports(cleaned.strip())))
+        )
     return ""
 
 
