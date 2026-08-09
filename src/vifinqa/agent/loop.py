@@ -24,6 +24,7 @@ from vifinqa.etl.merged_evidence import STATEMENTS
 from vifinqa.etl.tidy import load_layout_dict, wide_csv_to_tidy, write_tidy_csv
 from vifinqa.retrieval.entity import Entities
 from vifinqa.retrieval.facts_index import FactsIndex
+from vifinqa.retrieval.label_index import LabelIndex, metric_tokens_from
 from vifinqa.retrieval.pipeline import RetrievalPipeline
 from vifinqa.retrieval.search import SearchResult
 from vifinqa.sandbox import check_code, run_pandas
@@ -294,6 +295,70 @@ def _plan_evidence(
     return usable, cards, evidence, evidence_plan
 
 
+_label_index_cache: LabelIndex | None = None
+
+
+def _get_label_index(derived_dir: Path) -> LabelIndex | None:
+    """Load label_index.pkl (lazy, cache 1 lần). None nếu chưa build."""
+    global _label_index_cache
+    if _label_index_cache is not None:
+        return _label_index_cache
+    p = derived_dir / "label_index.pkl"
+    if not p.exists():
+        return None
+    try:
+        _label_index_cache = LabelIndex.load(p)
+    except Exception:
+        _label_index_cache = None
+    return _label_index_cache
+
+
+def _label_recall(
+    question: str,
+    entities: Entities,
+    results: list[SearchResult],
+    derived_dir: Path,
+    max_add: int = 4,
+) -> list[SearchResult]:
+    """Lexical recall: fuzzy-match chi_tieu trong evidence → union bảng chưa có trong top-k.
+
+    Chỉ chạy khi dense retrieval chưa đủ (bảng đúng bị miss vì row_labels cắt / dilution).
+    Filter theo ticker + year; trả SearchResult giả (score thấp, đứng sau dense).
+    """
+    idx = _get_label_index(derived_dir)
+    if idx is None:
+        return results
+    mt = metric_tokens_from(question, tickers=set(entities.tickers))
+    if len(mt) < 2:
+        return results
+    hits = idx.lookup(mt, tickers=set(entities.tickers), years=set(entities.years), min_overlap=2)
+    if not hits:
+        return results
+
+    existing = {r.relevant_tables_key() for r in results}
+    added = 0
+    for rid, tid, score in hits:
+        key = f"{rid}|{tid}"
+        if key in existing or added >= max_add:
+            continue
+        # parse position từ table_id
+        try:
+            pos = int(tid.removeprefix("table_"))
+        except ValueError:
+            continue
+        results.append(SearchResult(
+            report_id=rid, ticker="", year=0, report_type="", table_id=tid,
+            position=pos, page_no=None, statement="", is_statement=False,
+            unit="VND", unit_factor=1.0, header_text="", row_labels=idx.label_of(rid, tid),
+            score=score * 0.5,  # đứng sau dense (dense score thường >0.4)
+        ))
+        existing.add(key)
+        added += 1
+    if added:
+        print(f"    [lexical] +{added} bảng từ label index ({len(existing)} total)", flush=True)
+    return results
+
+
 _STMT_HINT_VI = {
     "income": "kết quả kinh doanh / thu nhập",
     "balance_sheet": "bảng cân đối kế toán",
@@ -340,6 +405,9 @@ def solve(
 
     results, entities = pipeline.search(question)
     results = results or []
+
+    # Lexical recall: union bảng khớp chi_tieu (fix bảng đúng miss do row_labels cắt/dilution).
+    results = _label_recall(question, entities, results, derived_dir)
 
     usable, cards, evidence, evidence_plan = _plan_evidence(results, facts_index, derived_dir)
 

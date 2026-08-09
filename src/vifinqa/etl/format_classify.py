@@ -63,6 +63,7 @@ class TableLayout:
     unit_factor: float = 1.0
     unit_label: str = "VND"
     number_format: str = "vi"
+    value_col: int | None = None       # bảng KHÔNG có cột kỳ (bảng %/danh sách): cột giá trị chính
 
     def period_headers(self, grid: TableGrid) -> list[str]:
         r = grid.rows[self.period_row_idx] if self.period_row_idx < grid.n_rows else []
@@ -139,6 +140,51 @@ def _periods_on(grid: TableGrid, row_idx: int) -> list[int]:
     return [c for c in range(len(row)) if is_period_cell(row[c])]
 
 
+def _value_col(grid: TableGrid, header_idx: int, label_col: int,
+               code_col: int | None) -> int | None:
+    """Cột giá trị chính khi bảng KHÔNG có cột kỳ (bảng %/danh sách công ty con).
+
+    Chọn cột đầu tiên (sau label/code) có ≥50% cell parse được số, ưu tiên header
+    chứa `%|ty le|so huu|gia tri|biểu quyết`. Trả None nếu không có cột số rõ ràng.
+    """
+    from vifinqa.etl.numbers import parse_vn_number
+
+    def _num_ratio(col: int) -> float:
+        vals = []
+        for r in range(header_idx + 1, grid.n_rows):
+            row = grid.rows[r]
+            if col < len(row):
+                c = row[col].strip()
+                if c and c != "-":
+                    vals.append(c)
+        if not vals:
+            return 0.0
+        ok = sum(1 for v in vals if parse_vn_number(v) is not None)
+        return ok / len(vals)
+
+    def _header_has_value(col: int) -> bool:
+        hdr = grid.rows[header_idx][col] if header_idx < grid.n_rows and col < len(grid.rows[header_idx]) else ""
+        return bool(re.search(r"%|ty\s*le|ti\s*le|so\s*huu|gia\s*tri|bieu\s*quyet|loi\s*ich", normalize_label(hdr)))
+
+    skip = {label_col}
+    if code_col is not None:
+        skip.add(code_col)
+    # ưu tiên cột header có dấu hiệu giá trị (%/tỷ lệ/giá trị) + đủ số
+    best: int | None = None
+    best_ratio = 0.0
+    for c in range(grid.n_cols):
+        if c in skip:
+            continue
+        ratio = _num_ratio(c)
+        if ratio < 0.5:
+            continue
+        if _header_has_value(c):
+            return c
+        if ratio > best_ratio:
+            best, best_ratio = c, ratio
+    return best
+
+
 def _filter_period_cols_by_group(grid: TableGrid, period_row_idx: int,
                                  period_cols: list[int], report_type: str) -> list[int]:
     """Lọc cột kỳ theo nhóm (report_type) nếu bảng có group-row "Tập đoàn/Công ty".
@@ -206,32 +252,42 @@ def detect_layout(grid: TableGrid, anchor_text: str = "",
         if nxt:
             period_cols, period_row_idx = nxt, header_idx + 1
 
-    if not period_cols:
-        return None
+    # 2b) lọc cột theo group "Tập đoàn/Công ty" nếu có (chỉ khi có period cols)
+    if period_cols:
+        period_cols = _filter_period_cols_by_group(grid, period_row_idx, period_cols, report_type)
 
-    # 2b) lọc cột theo group "Tập đoàn/Công ty" nếu có
-    period_cols = _filter_period_cols_by_group(grid, period_row_idx, period_cols, report_type)
-    if not period_cols:
-        return None
-
-    # 3) code / label / thuyết minh
+    # 3) code / label / thuyết minh (cần trước để loại trừ khỏi value_col)
     period_set = set(period_cols)
     code_col = _code_col(grid, header_idx, period_set)
     label_col = _label_col(grid, header_idx, period_set, code_col)
     notes_cols = _thuyet_minh_cols(grid, header_idx)
 
-    # 4) unit + number format
-    period_row = grid.rows[period_row_idx] if period_row_idx < grid.n_rows else []
-    header_cells = [period_row[c] for c in period_cols if c < len(period_row)]
-    uf, ul = detect_unit(header_cells, anchor_text)
+    # 4) bảng KHÔNG có cột kỳ → thử detect cột giá trị (bảng %/danh sách công ty)
+    value_col = None
+    if not period_cols:
+        value_col = _value_col(grid, header_idx, label_col, code_col)
+        if value_col is None:
+            return None
 
-    # 5) number format trên toàn ô giá trị
+    # 5) unit + number format
+    if period_cols:
+        period_row = grid.rows[period_row_idx] if period_row_idx < grid.n_rows else []
+        header_cells = [period_row[c] for c in period_cols if c < len(period_row)]
+        uf, ul = detect_unit(header_cells, anchor_text)
+    else:
+        period_row = grid.rows[header_idx] if header_idx < grid.n_rows else []
+        uf, ul = detect_unit([], anchor_text)
+
+    # 6) number format trên toàn ô giá trị
     value_cells: list[str] = []
     for r in range(period_row_idx + 1, grid.n_rows):
         row = grid.rows[r]
-        for pc in period_cols:
-            if pc < len(row):
-                value_cells.append(row[pc])
+        if period_cols:
+            for pc in period_cols:
+                if pc < len(row):
+                    value_cells.append(row[pc])
+        elif value_col is not None and value_col < len(row):
+            value_cells.append(row[value_col])
     num_fmt = detect_number_format(value_cells)
 
     return TableLayout(
@@ -244,6 +300,7 @@ def detect_layout(grid: TableGrid, anchor_text: str = "",
         unit_factor=uf,
         unit_label=ul,
         number_format=num_fmt,
+        value_col=value_col,
     )
 
 

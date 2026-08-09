@@ -153,6 +153,7 @@ def grid_to_tidy(grid_rows: list[list[str]], report_year: int,
     code_col = None
     label_col = 0
     period_cols: list[int] = []
+    value_col = None
     if layout:
         header_idx = int(layout.get("header_idx") or 0)
         period_row_idx = int(layout.get("period_row_idx") or 0)
@@ -161,6 +162,8 @@ def grid_to_tidy(grid_rows: list[list[str]], report_year: int,
         if layout.get("label_col") is not None:
             label_col = int(layout["label_col"])
         period_cols = [int(x) for x in layout.get("period_cols") or []]
+        if layout.get("value_col") is not None:
+            value_col = int(layout["value_col"])
         uf = layout.get("unit_factor")
         if uf:
             unit_factor = float(uf)
@@ -184,6 +187,18 @@ def grid_to_tidy(grid_rows: list[list[str]], report_year: int,
         code = ""
         if code_col is not None and code_col < len(row):
             code = row[code_col].strip()
+        if not period_cols and value_col is not None:
+            # bảng không có cột kỳ (bảng %/danh sách): emit 1 row, ky = năm báo cáo
+            if value_col < len(row):
+                cell = row[value_col]
+                if cell.strip():
+                    val = parse_vn_number(cell)
+                    if val is not None:
+                        out.append({
+                            "chi_tieu": normalize_label(label), "Mãsố": code,
+                            "ky": str(report_year), "value": round(val * unit_factor, 6),
+                        })
+            continue
         for pc in period_cols:
             if pc >= len(row):
                 continue

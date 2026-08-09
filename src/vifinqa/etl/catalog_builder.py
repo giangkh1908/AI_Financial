@@ -25,7 +25,7 @@ CATALOG_HEADER = [
     "unit", "unit_factor", "is_statement", "statement", "header_text",
     "row_labels", "n_rows", "n_cols", "anchor_context", "start_line",
     "header_idx", "period_row_idx", "code_col", "label_col",
-    "period_cols", "thuyet_minh_cols", "number_format",
+    "period_cols", "thuyet_minh_cols", "number_format", "value_col",
 ]
 DOC_HEADER = [
     "report_id", "ticker", "year", "report_type", "company_name",
@@ -58,6 +58,7 @@ class CatalogRow:
     period_cols: str
     thuyet_minh_cols: str
     number_format: str
+    value_col: int | None
 
     def as_row(self) -> list[str]:
         return [
@@ -72,6 +73,7 @@ class CatalogRow:
             "" if self.code_col is None else str(self.code_col),
             "" if self.label_col is None else str(self.label_col),
             self.period_cols, self.thuyet_minh_cols, self.number_format,
+            "" if self.value_col is None else str(self.value_col),
         ]
 
     def layout_dict(self) -> dict:
@@ -86,6 +88,7 @@ class CatalogRow:
             "unit_factor": self.unit_factor,
             "unit_label": self.unit,
             "number_format": self.number_format,
+            "value_col": self.value_col,
         }
 
 
@@ -111,10 +114,10 @@ def _period_cols_str(cols: list[int]) -> str:
     return json.dumps(cols) if cols else ""
 
 
-def layout_to_catalog_fields(layout: TableLayout) -> tuple[int, int, int | None, int | None, str, str, str]:
-    """TableLayout → (header_idx, period_row_idx, code_col, label_col, period_cols, tm_cols, num_fmt)."""
+def layout_to_catalog_fields(layout: TableLayout) -> tuple[int, int, int | None, int | None, str, str, str, int | None]:
+    """TableLayout → (header_idx, period_row_idx, code_col, label_col, period_cols, tm_cols, num_fmt, value_col)."""
     if layout is None:
-        return 0, 0, None, None, "", "", ""
+        return 0, 0, None, None, "", "", "", None
     return (
         layout.header_idx,
         layout.period_row_idx,
@@ -123,6 +126,7 @@ def layout_to_catalog_fields(layout: TableLayout) -> tuple[int, int, int | None,
         _period_cols_str(layout.period_cols),
         _period_cols_str(layout.thuyet_minh_cols),
         layout.number_format,
+        layout.value_col,
     )
 
 
@@ -218,7 +222,7 @@ def process_report(report: ReportMeta, derived_dir: Path) -> list[CatalogRow]:
             header_text, row_labels = header_and_labels(grid, header_idx, layout.label_col if layout else None)
             table_id = f"table_{table_idx}"
             write_table_csv(tables_dir, table_id, grid)
-            hi, pri, cc, lc, pcs, tms, nf = layout_to_catalog_fields(layout)
+            hi, pri, cc, lc, pcs, tms, nf, vc = layout_to_catalog_fields(layout)
             rows.append(
                 CatalogRow(
                     report_id=report.report_id,
@@ -244,6 +248,7 @@ def process_report(report: ReportMeta, derived_dir: Path) -> list[CatalogRow]:
                     period_cols=pcs,
                     thuyet_minh_cols=tms,
                     number_format=nf,
+                    value_col=vc,
                 )
             )
             pos = page.text.find(table_html, pos)
