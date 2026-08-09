@@ -107,7 +107,7 @@ def hybrid_search(
     if len(prefetch) == 1:
         resp = client.query_points(
             col, query=prefetch[0].query, using=prefetch[0].using,
-            filter=flt, limit=cfg.rerank_depth, with_payload=True,
+            query_filter=flt, limit=cfg.rerank_depth, with_payload=True,
         )
     else:
         resp = client.query_points(

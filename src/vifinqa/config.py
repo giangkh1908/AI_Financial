@@ -86,6 +86,7 @@ class EmbeddingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     provider: str = "openrouter"
+    base_url: str = ""               # endpoint trực tiếp (vd ngrok BGE-M3 `/embed`); "" = reuse LLMConfig
     model: str = "baai/bge-m3"
     dense_dim: int = 1024
     max_chars: int = 2000            # cap text_dense (≈ 512 tokens bge-m3)

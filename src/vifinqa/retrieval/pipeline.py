@@ -25,7 +25,7 @@ class RetrievalPipeline:
         ret = cfg.retrieval
         self._cmap = load_company_map(cfg.resolved_data_dir() / "code_stock.csv")
         self._client = make_qdrant_client(ret)
-        self._embed_client = _new_openai_client(cfg)
+        self._embed_client = _new_openai_client(cfg) if ret.embedding.provider == "openrouter" else None
         self._reranker = None
         if ret.rerank.enabled:
             self._reranker = self._load_reranker(ret.rerank)
@@ -51,6 +51,16 @@ class RetrievalPipeline:
         qdense = self._embed_query(question) if ret.use_dense else None
         qsparse = tf_sparse(question) if ret.use_sparse else None
         results = hybrid_search(self._client, qdense, qsparse, ret, flt)
+        # Fallback: filter report_type quá hẹp (báo cáo 'other' không tách cons/sep —
+        # EVF/FTS...). "công ty mẹ"→separate nhưng chỉ có 1 báo cáo → bỏ filter type.
+        if not results and flt is not None and entities.report_type:
+            relaxed = build_payload_filter(entities.__class__(
+                tickers=entities.tickers, years=entities.years,
+                year_ranges=entities.year_ranges, report_type=None,
+                statement=entities.statement, unit_factor=entities.unit_factor,
+                unit_label=entities.unit_label, matched_names=entities.matched_names,
+            ))
+            results = hybrid_search(self._client, qdense, qsparse, ret, relaxed)
         results = apply_statement_bonus(results, entities.statement, ret.statement_bonus)
         results = results[: ret.rerank.candidates]
         if ret.rerank.enabled and results and self._reranker is not None:

@@ -84,7 +84,9 @@ def main() -> int:
         todo = [t for t in by_ticker if (not wanted or t in wanted) and t not in state]
         print(f"Ticker tổng: {len(by_ticker)}, đã xong: {len(by_ticker) - len(todo)}, sẽ chạy: {len(todo)}")
 
-        embed_client = _new_openai_client(cfg)
+        embed_client = None
+        if ret.embedding.provider == "openrouter":
+            embed_client = _new_openai_client(cfg)  # chỉ cần client OpenAI cho openrouter
         total_pts = 0
         total_chars = 0
         total_hits = 0

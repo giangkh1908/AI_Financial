@@ -16,11 +16,11 @@ import csv
 from pathlib import Path
 
 from vifinqa.etl.catalog_builder import anchor_text
+from vifinqa.etl.format_classify import classify_table
 from vifinqa.etl.numbers import detect_unit
 from vifinqa.etl.parser import find_header_row, parse_table_grid, split_pages
 from vifinqa.etl.statements import (
     build_asset,
-    classify_statement,
     emit_facts,
     group_statement_fragments,
 )
@@ -34,10 +34,11 @@ FACTS_HEADER = [
 
 
 def _scan_report_tables(report: ReportMeta) -> list[tuple]:
-    """Quét report theo thứ tự → list (table_idx, table_id, grid, anchor, stmt, uf, ul).
+    """Quét report theo thứ tự → list (table_idx, table_id, grid, anchor, stmt, uf, ul, layout).
 
     table_idx 1-based toàn report (không reset theo trang) — khớp với wide CSV
-    table_N.csv của M1.
+    table_N.csv của M1. `layout` = TableLayout chuẩn hoá (format_classify) —
+    FORMAT CHUNG cho mọi loại DN/bank/chứng khoán/header 2 tầng.
     """
     text = report.path.read_text(encoding="utf-8", errors="replace")
     pages = split_pages(text)
@@ -50,17 +51,17 @@ def _scan_report_tables(report: ReportMeta) -> list[tuple]:
             grid = parse_table_grid(table_html)
             table_id = f"table_{table_idx}"
             if grid.n_rows == 0:
-                out.append((table_idx, table_id, grid, "", None, 1.0, "VND"))
+                out.append((table_idx, table_id, grid, "", None, 1.0, "VND", None))
                 pos = page.text.find(table_html, pos)
                 if pos != -1:
                     pos += len(table_html)
                 continue
             anchor = anchor_text(page.text, table_html, pos)
-            stmt = classify_statement(grid, anchor)
-            header_idx = find_header_row(grid)
+            stmt, layout = classify_table(grid, anchor, report.report_type)
+            header_idx = layout.header_idx if layout else find_header_row(grid)
             header_cells = grid.rows[header_idx] if header_idx < grid.n_rows else []
             uf, ul = detect_unit(header_cells, anchor)
-            out.append((table_idx, table_id, grid, anchor, stmt, uf, ul))
+            out.append((table_idx, table_id, grid, anchor, stmt, uf, ul, layout))
             pos = page.text.find(table_html, pos)
             if pos != -1:
                 pos += len(table_html)

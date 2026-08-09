@@ -60,24 +60,49 @@ def extract_tables(page_text: str) -> list[str]:
 
 
 def parse_table_grid(table_html: str) -> TableGrid:
-    """Parse HTML bảng → grid 2 chiều, expand `colspan` (nhân text sang cột).
+    """Parse HTML bảng → grid 2 chiều, expand `colspan` VÀ `rowspan`.
 
-    ⚠️ `rowspan` CHƯA xử lý (ô rowspan chỉ chiếm 1 dòng) — chấp nhận cho wide
-    tier M1; statements (M2) cần grid riêng cho dòng dữ liệu chuẩn.
+    rowspan: ô `rowspan=N` giữ nguyên text ở N dòng liên tiếp (cùng cột). Fix
+    session 8/8: header ngân hàng (`<td rowspan=2 colspan=2></td>`) trước đây
+    lệch cột → mọi bảng statement giờ align đúng code/label/period columns.
     """
     soup = BeautifulSoup(table_html, "lxml")
     table = soup.find("table")
     rows: list[list[str]] = []
     if table is None:
         return TableGrid(rows=rows, n_cols=0)
+    active: dict[int, tuple[str, int]] = {}  # col → (text, remaining_rows)
     for tr in table.find_all("tr"):
-        cells: list[str] = []
-        for cell in tr.find_all(["td", "th"], recursive=False):
+        cells = tr.find_all(["td", "th"], recursive=False)
+        row: list[str] = []
+        col = 0
+        # điền các ô rowspan còn hiệu lực từ dòng trước
+        new_active: dict[int, tuple[str, int]] = {}
+        for c, (text, remaining) in sorted(active.items()):
+            while col < c:
+                row.append("")
+                col += 1
+            row.append(text)
+            col += 1
+            if remaining > 1:
+                new_active[c] = (text, remaining - 1)
+        active = new_active
+        # các ô mới của dòng này
+        for cell in cells:
             colspan = int(cell.get("colspan") or 1)
+            rowspan = int(cell.get("rowspan") or 1)
             text = cell.get_text(" ", strip=True)
-            cells.extend([text] * max(1, colspan))
-        rows.append(cells)
+            while col in active and col < len(row):
+                col += 1
+            for i in range(colspan):
+                if rowspan > 1:
+                    active[col + i] = (text, rowspan - 1)
+                row.append(text)
+            col += colspan
+        rows.append(row)
     n_cols = max((len(r) for r in rows), default=0)
+    for r in rows:
+        r += [""] * (n_cols - len(r))
     return TableGrid(rows=rows, n_cols=n_cols)
 
 

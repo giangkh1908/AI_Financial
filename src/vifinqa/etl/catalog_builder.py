@@ -9,12 +9,13 @@ N = số thứ tự <table> trong report (1-based, toàn report không reset the
 from __future__ import annotations
 
 import csv
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
 from vifinqa.etl.numbers import detect_unit
 from vifinqa.etl.parser import TABLE_RE, TableGrid, find_header_row, parse_table_grid, split_pages
-from vifinqa.etl.statements import classify_statement
+from vifinqa.etl.format_classify import TableLayout, classify_table, detect_layout
 from vifinqa.loader import ReportMeta
 
 ANCHOR_LINES = 6  # số dòng text trước bảng dùng làm context phân loại
@@ -23,6 +24,8 @@ CATALOG_HEADER = [
     "report_id", "ticker", "year", "report_type", "table_id", "page_no",
     "unit", "unit_factor", "is_statement", "statement", "header_text",
     "row_labels", "n_rows", "n_cols", "anchor_context", "start_line",
+    "header_idx", "period_row_idx", "code_col", "label_col",
+    "period_cols", "thuyet_minh_cols", "number_format",
 ]
 DOC_HEADER = [
     "report_id", "ticker", "year", "report_type", "company_name",
@@ -48,6 +51,13 @@ class CatalogRow:
     n_cols: int
     anchor_context: str
     start_line: int
+    header_idx: int
+    period_row_idx: int
+    code_col: int | None
+    label_col: int | None
+    period_cols: str
+    thuyet_minh_cols: str
+    number_format: str
 
     def as_row(self) -> list[str]:
         return [
@@ -58,7 +68,62 @@ class CatalogRow:
             self.header_text, self.row_labels,
             str(self.n_rows), str(self.n_cols), self.anchor_context,
             str(self.start_line),
+            str(self.header_idx), str(self.period_row_idx),
+            "" if self.code_col is None else str(self.code_col),
+            "" if self.label_col is None else str(self.label_col),
+            self.period_cols, self.thuyet_minh_cols, self.number_format,
         ]
+
+    def layout_dict(self) -> dict:
+        """Layout chi tiết (period headers đã resolve) — ghi vào layouts/{report_id}.json."""
+        return {
+            "header_idx": self.header_idx,
+            "period_row_idx": self.period_row_idx,
+            "code_col": self.code_col,
+            "label_col": self.label_col,
+            "period_cols": _json_list(self.period_cols),
+            "thuyet_minh_cols": _json_list(self.thuyet_minh_cols),
+            "unit_factor": self.unit_factor,
+            "unit_label": self.unit,
+            "number_format": self.number_format,
+        }
+
+
+def _json_list(s: str) -> list[int]:
+    """'[1, 2]' (JSON từ catalog) → list[int]; fallback parse '1;2'."""
+    s = (s or "").strip()
+    if not s:
+        return []
+    try:
+        v = json.loads(s)
+        return [int(x) for x in v] if isinstance(v, list) else []
+    except (ValueError, TypeError):
+        pass
+    out = []
+    for part in s.replace("[", "").replace("]", "").split(","):
+        part = part.strip()
+        if part.isdigit():
+            out.append(int(part))
+    return out
+
+
+def _period_cols_str(cols: list[int]) -> str:
+    return json.dumps(cols) if cols else ""
+
+
+def layout_to_catalog_fields(layout: TableLayout) -> tuple[int, int, int | None, int | None, str, str, str]:
+    """TableLayout → (header_idx, period_row_idx, code_col, label_col, period_cols, tm_cols, num_fmt)."""
+    if layout is None:
+        return 0, 0, None, None, "", "", ""
+    return (
+        layout.header_idx,
+        layout.period_row_idx,
+        layout.code_col,
+        layout.label_col,
+        _period_cols_str(layout.period_cols),
+        _period_cols_str(layout.thuyet_minh_cols),
+        layout.number_format,
+    )
 
 
 def table_start_lines(full_text: str) -> dict[int, int]:
@@ -95,29 +160,32 @@ def write_table_csv(tables_dir: Path, table_id: str, grid: TableGrid) -> None:
             w.writerow(padded)
 
 
-def header_and_labels(grid: TableGrid, header_idx: int) -> tuple[str, str]:
-    """(header_text, row_labels): header nối dọc theo cột; labels = cột đầu ~10 dòng dữ liệu.
+def header_and_labels(grid: TableGrid, header_idx: int, label_col: int | None = None) -> tuple[str, str]:
+    """(header_text, row_labels): header nối dọc theo cột; labels = cột label thật ~10 dòng.
 
+    label_col từ layout (nguồn sự thật) — bảng có cột STT/mã tách riêng (FTS chi phí
+    quản lý: cột 0=STT, cột 1=label) cần lấy cột label, không phải cột 0. Fallback 0.
     Bỏ dòng section title (colspan full-width: mọi ô giống hệt nhau, vd "TÀI SẢN"*n)
     để row_labels chỉ chứa nhãn chỉ tiêu thật.
     """
     header = grid.rows[header_idx] if header_idx < grid.n_rows else []
     header_text = " | ".join(c for c in header)
+    lc = label_col if label_col is not None else 0
     labels = []
     for row in grid.rows[header_idx + 1:]:
-        if not row or not row[0].strip():
+        if not row or lc >= len(row) or not row[lc].strip():
             continue
         # dòng section title: các ô sau expand colspan giống hệt nhau → bỏ
         if len(set(row)) == 1:
             continue
-        labels.append(row[0])
+        labels.append(row[lc])
         if len(labels) >= 10:
             break
     return header_text, " | ".join(labels)
 
 
 def process_report(report: ReportMeta, derived_dir: Path) -> list[CatalogRow]:
-    """Xử lý 1 report → ghi wide CSVs, trả catalog rows."""
+    """Xử lý 1 report → ghi wide CSVs + layouts/{rid}.json, trả catalog rows."""
     text = report.path.read_text(encoding="utf-8", errors="replace")
     pages = split_pages(text)
     start_lines = table_start_lines(text)  # table_idx → physical line (OCR)
@@ -137,14 +205,20 @@ def process_report(report: ReportMeta, derived_dir: Path) -> list[CatalogRow]:
                     pos += len(table_html)
                 continue
             anchor = anchor_text(page.text, table_html, pos)
-            stmt = classify_statement(grid, anchor)
-            header_idx = find_header_row(grid)
+            stmt, layout = classify_table(grid, anchor, report.report_type)
+            if layout is None:
+                # Notes/segment (vd cho vay theo ngành): vẫn detect cột kỳ/unit để tidy ra value.
+                layout = detect_layout(grid, anchor, report.report_type)
+            header_idx = layout.header_idx if layout else find_header_row(grid)
             header_cells = grid.rows[header_idx] if header_idx < grid.n_rows else []
             # fallback unit giới hạn trong anchor (text trước bảng) — không quét cả trang
             unit_factor, unit_label = detect_unit(header_cells, anchor)
-            header_text, row_labels = header_and_labels(grid, header_idx)
+            if layout is not None:
+                unit_factor, unit_label = layout.unit_factor, layout.unit_label
+            header_text, row_labels = header_and_labels(grid, header_idx, layout.label_col if layout else None)
             table_id = f"table_{table_idx}"
             write_table_csv(tables_dir, table_id, grid)
+            hi, pri, cc, lc, pcs, tms, nf = layout_to_catalog_fields(layout)
             rows.append(
                 CatalogRow(
                     report_id=report.report_id,
@@ -163,12 +237,27 @@ def process_report(report: ReportMeta, derived_dir: Path) -> list[CatalogRow]:
                     n_cols=grid.n_cols,
                     anchor_context=anchor,
                     start_line=start_lines.get(table_idx, 0),
+                    header_idx=hi,
+                    period_row_idx=pri,
+                    code_col=cc,
+                    label_col=lc,
+                    period_cols=pcs,
+                    thuyet_minh_cols=tms,
+                    number_format=nf,
                 )
             )
             pos = page.text.find(table_html, pos)
             if pos != -1:
                 pos += len(table_html)
+    write_layouts_json(rows, derived_dir / "layouts" / f"{report.report_id}.json")
     return rows
+
+
+def write_layouts_json(rows: list[CatalogRow], path: Path) -> None:
+    """{table_id: layout dict} — nguồn sự thật cấu trúc (kể cả notes/segment)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {r.table_id: r.layout_dict() for r in rows}
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
 def write_catalog_csv(rows: list[CatalogRow], path: Path) -> None:

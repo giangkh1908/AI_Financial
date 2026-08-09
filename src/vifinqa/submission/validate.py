@@ -21,16 +21,27 @@ _TRIVIAL_QUERY = "result = 0.0"
 
 def _table_ref_from_csv_path(csv_path: str) -> str:
     """`data/{report_id}__table_{N}.csv` → `{report_id}|table_N` (khớp grader BTC:
-    dfs keyed theo table_ref, không phải variable)."""
+    dfs keyed theo table_ref, không phải variable).
+
+    Bảng gộp statement (`__income`/`__cash_flow`/`__balance_sheet`) không có
+    `table_N` → fallback key = `{report_id}|{statement}` (key chỉ mang tính định
+    danh; runner gán `dfN` theo thứ tự evidence, không phụ thuộc key).
+    """
     name = csv_path.split("/", 1)[-1]  # bỏ prefix "data/"
     stem = name[:-len(".csv")] if name.endswith(".csv") else name
     marker = "__table_"
     idx = stem.find(marker)
-    if idx < 0:
-        raise ValueError(f"không tách được table_id: {csv_path}")
-    report_id = stem[:idx]
-    table_id = "table_" + stem[idx + len(marker):]
-    return f"{report_id}|{table_id}"
+    if idx >= 0:
+        report_id = stem[:idx]
+        table_id = "table_" + stem[idx + len(marker):]
+        return f"{report_id}|{table_id}"
+    # Bảng gộp statement: `{report_id}__{statement}`
+    for stmt in ("income", "cash_flow", "balance_sheet"):
+        m = f"__{stmt}"
+        idx = stem.find(m)
+        if idx >= 0:
+            return f"{stem[:idx]}|{stmt}"
+    raise ValueError(f"không tách được table_id: {csv_path}")
 
 
 def _validate_one(rec: dict, root: Path, abs_tol: float, timeout: int, max_code_len: int, max_ast_nodes: int) -> tuple[dict, str]:
@@ -65,7 +76,8 @@ def _validate_one(rec: dict, root: Path, abs_tol: float, timeout: int, max_code_
         verdict["error"] = f"ast: {cerr}"
         return verdict, "crash"
     # Evidence keyed theo table_ref (khớp grader BTC), KHÔNG phải variable.
-    # dfs["{report_id}|table_N"] — mirror sandbox.py grader.
+    # dfs["{report_id}|table_N"] — mirror sandbox.py grader. Path resolve ABSOLUTE
+    # (run_pandas sẽ prepend root nếu path còn relative → tránh path bị nhân đôi).
     evidence = {}
     for ev in ev_list:
         try:
@@ -73,7 +85,7 @@ def _validate_one(rec: dict, root: Path, abs_tol: float, timeout: int, max_code_
         except ValueError as e:
             verdict["error"] = str(e)
             return verdict, "bad_path"
-        evidence[key] = str(root / ev["csv_path"])
+        evidence[key] = str((root / ev["csv_path"]).resolve())
     out = run_pandas(query, evidence, root, timeout=timeout)
     if not out.get("ok"):
         verdict["error"] = out.get("error", "")

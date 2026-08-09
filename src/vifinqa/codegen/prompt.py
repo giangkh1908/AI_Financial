@@ -47,7 +47,8 @@ MÔI TRƯỜNG (đã có sẵn, KHÔNG cần import/khởi tạo):
   có thể dùng `df1` hoặc `df`). Dùng CHÍNH XÁC tên variable từ evidence.
 
 SCHEMA mỗi bảng (đúng 4 cột, theo thứ tự):
-  - "chi_tieu": tên chỉ tiêu (vd "Doanh thu thuần bán hàng và cung cấp dịch vụ")
+  - "chi_tieu": tên chỉ tiêu, KHÔNG DẤU tiếng Việt (ASCII lowercase) — vd "loi nhuan sau thue"
+    (bảng gốc "Lợi nhuận sau thuế"). Ưu tiên search theo "Mãsố".
   - "Mãsố": mã số chỉ tiêu (vd "10", "60"; có thể rỗng "")
   - "ky": năm kỳ báo cáo dạng chuỗi (vd "2023", "2022")
   - "value": giá trị dạng chuỗi (dtype=str) → parse bằng `float()` hoặc `vn_num()`,
@@ -76,7 +77,8 @@ QUY TẮC BẮT BUỘC:
 2. KHÔNG import, KHÔNG gọi pd.read_csv/open/eval/exec. Chỉ dùng pd + builtins + vn_num.
 3. Lọc dòng bằng boolean mask TRÊN CỘT. Luôn .astype(str) khi so sánh cột text:
    - Theo mã:   df[df["Mãsố"].astype(str) == "60"]
-   - Theo tên:  df[df["chi_tieu"].astype(str).str.contains("lợi nhuận sau thuế", case=False, na=False)]
+   - Theo tên:  df[df["chi_tieu"].astype(str).str.contains("loi nhuan sau thue", case=False, na=False)]
+     ⚠️ "chi_tieu" KHÔNG DẤU → keyword phải BỎ DẤU tiếng Việt (vd "lợi nhuận sau thuế" → "loi nhuan sau thue").
    - Theo năm:  df[df["ky"].astype(str) == "2023"]
    KHÔNG dùng .index (chỉ là số thứ tự RangeIndex), KHÔNG .iloc theo vị trí cột.
 4. Lấy value: `float(sub["value"].iloc[0])` (hoặc `vn_num(sub["value"].iloc[0])`).
@@ -98,13 +100,13 @@ QUY TẮC BẮT BUỘC:
 
 _FEW_SHOT = """
 VÍ DỤ 1 — 1 bảng (variable=df1), tra cứu + đổi đơn vị:
-df1 = BCTC thu nhập (income), schema: chi_tieu | Mãsố | ky | value (VNĐ, chuỗi)
+df1 = BCTC thu nhập (income), schema: chi_tieu (KHÔNG DẤU) | Mãsố | ky | value (VNĐ, chuỗi)
 Gợi ý mã số: 60 = Lợi nhuận sau thuế TNDN, 10 = Doanh thu thuần
 Câu hỏi: "Lợi nhuận sau thuế năm 2023 của HPG là bao nhiêu tỷ đồng?"
 ```python
 sub = df1[(df1["Mãsố"].astype(str) == "60") & (df1["ky"].astype(str) == "2023")]
 if len(sub) == 0:
-    sub = df1[(df1["chi_tieu"].astype(str).str.contains("lợi nhuận sau thuế", case=False, na=False)) & (df1["ky"].astype(str) == "2023")]
+    sub = df1[(df1["chi_tieu"].astype(str).str.contains("loi nhuan sau thue", case=False, na=False)) & (df1["ky"].astype(str) == "2023")]
 result = round(float(sub["value"].iloc[0]) / 1e9, 2) if len(sub) > 0 else 0.0
 ```
 
@@ -129,22 +131,34 @@ else:
 ```"""
 
 
+_STMT_VI = {
+    "balance_sheet": "BẢNG CÂN ĐỐI KẾ TOÁN (toàn bộ — đã gộp các bảng tách)",
+    "income": "KẾT QUẢ KINH DOANH (toàn bộ — đã gộp các bảng tách)",
+    "cash_flow": "LƯU CHUYỂN TIỀN TỆ (toàn bộ — đã gộp các bảng tách)",
+}
+
+
 def _format_table_card(card: dict) -> str:
     """1 bảng → text: variable name + meta + columns + sample rows."""
     # card có key "var_name" (df1, df2, ...) hoặc fallback về table_ref
     var_name = card.get("var_name", card["table_ref"])
+    if card.get("merged"):
+        stmt_vi = _STMT_VI.get(card["statement"], card["statement"] or "BCTC")
+        header = f'{var_name} = {card["report_id"]} | {stmt_vi}'
+    else:
+        header = f'{var_name} = {card["report_id"]} | bảng {card["position"]} | {card["statement"] or "thuyết minh"}'
     lines = [
-        f'{var_name} = {card["report_id"]} | bảng {card["position"]} | {card["statement"] or "thuyết minh"}',
+        header,
         f"  schema: cột {card['columns']} — value chuỗi (dtype=str)",
         f"  ⚠️ value đã CHUẨN HOÁ về đơn vị VNĐ. Đơn vị báo cáo gốc {card['unit'] or 'VND'} "
         f"(unit_factor={card['unit_factor']}) CHỈ ĐỂ THAM KHẢO — KHÔNG dùng factor này để quyết định "
         f"có đổi đơn vị hay không. LUÔN đổi theo ĐƠN VỊ TRONG CÂU HỎI.",
     ]
     if card.get("fact_hints"):
-        hints = "; ".join(f"{c} = {lab}" for c, lab in card["fact_hints"][:25])
+        hints = "; ".join(f"{c} = {lab}" for c, lab in card["fact_hints"])
         lines.append(f"  gợi ý mã số: {hints}")
     if card.get("sample_rows"):
-        lines.append("  mẫu dữ liệu (chi_tieu | Mãsố | ky | value):")
+        lines.append("  dữ liệu (chi_tieu | Mãsố | ky | value):")
         for row in card["sample_rows"].splitlines():
             lines.append(f"    {row}")
     return "\n".join(lines)
@@ -176,8 +190,7 @@ def build_messages(
     elif n_tables > 1:
         var_names = ", ".join(f"df{i+1}" for i in range(n_tables))
         table_info = "\n".join(
-            f"  df{i+1} = {c['report_id']} | bảng {c['position']} | {c['statement'] or 'thuyết minh'}"
-            for i, c in enumerate(table_cards)
+            f"  {_format_table_card(c).splitlines()[0]}" for c in table_cards
         )
         access_rule = (
             f"⚠️ CÓ {n_tables} BẢNG — ĐỌC KỸ:\n"

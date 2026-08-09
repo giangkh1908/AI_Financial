@@ -17,6 +17,7 @@ import json
 import shutil
 from pathlib import Path
 
+from vifinqa.etl.merged_evidence import STATEMENTS
 from vifinqa.config import ROOT
 from vifinqa.etl.tidy import wide_csv_to_tidy, write_tidy_csv
 from vifinqa.loader import load_questions
@@ -67,13 +68,18 @@ def _source_tidy_path(report_id: str, table_id: str, derived_dir: Path) -> Path:
     return derived_dir / "evidence" / f"{report_id}__{table_id}.csv"
 
 
+def _source_merged_path(report_id: str, statement: str, derived_dir: Path) -> Path:
+    """Bảng gộp statement (evidence_merged) — đúng schema 4 cột, value VND."""
+    return derived_dir / "evidence_merged" / f"{report_id}__{statement}.csv"
+
+
 def _source_wide_path(report_id: str, table_id: str, derived_dir: Path) -> Path:
     """Wide raw ETL `tables/{report_id}/{table_id}.csv` (fallback regenerate tidy)."""
     return derived_dir / "tables" / report_id / f"{table_id}.csv"
 
 
-def _flat_name(report_id: str, table_id: str) -> str:
-    return f"{report_id}__{table_id}.csv"
+def _flat_name(report_id: str, item: str) -> str:
+    return f"{report_id}__{item}.csv"
 
 
 def _load_unit_factors(derived_dir: Path) -> dict[tuple[str, str], float]:
@@ -128,22 +134,27 @@ def _table_ref_to_line(key: str, start_lines: dict[tuple[str, str], int]) -> str
 
 
 def _parse_evidence_var_and_src(ev: dict) -> tuple[str, str, str]:
-    """`csv_path` = `data/{report_id}__{table_id}.csv` → (var, report_id, table_id)."""
+    """`csv_path` = `data/{report_id}__{item}.csv` → (var, report_id, item).
+
+    `item` = `table_N` (bảng đơn) hoặc `balance_sheet|income|cash_flow` (bảng gộp).
+    """
     var = ev["variable"]
     csv_path = ev["csv_path"]
     name = csv_path.split("/", 1)[-1]  # bỏ prefix "data/"
     if not name.endswith(".csv"):
         raise ValueError(f"csv_path không hợp lệ: {csv_path}")
     stem = name[:-len(".csv")]
-    # {report_id}__{table_id}; table_id = "table_N"; report_id có thể chứa "__"? không.
-    # Tách theo "__table_" để an toàn (table_id luôn bắt đầu "table_").
+    # {report_id}__{item}; tách theo marker để an toàn.
     marker = "__table_"
     idx = stem.find(marker)
-    if idx < 0:
-        raise ValueError(f"không tách được table_id: {csv_path}")
-    report_id = stem[:idx]
-    table_id = "table_" + stem[idx + len(marker):]
-    return var, report_id, table_id
+    if idx >= 0:
+        return var, stem[:idx], "table_" + stem[idx + len(marker):]
+    for stmt in STATEMENTS:
+        m = f"__{stmt}"
+        idx = stem.find(m)
+        if idx >= 0:
+            return var, stem[:idx], stmt
+    raise ValueError(f"không tách được item (table/statement): {csv_path}")
 
 
 def build(results_jsonl: Path, out_dir: Path, derived_dir: Path, questions_path: Path) -> dict:
@@ -173,24 +184,32 @@ def build(results_jsonl: Path, out_dir: Path, derived_dir: Path, questions_path:
     for qid, rec in records.items():
         new_evidence = []
         for ev in rec.get("evidence", []):
-            var, report_id, table_id = _parse_evidence_var_and_src(ev)
-            flat = _flat_name(report_id, table_id)
+            var, report_id, item = _parse_evidence_var_and_src(ev)
+            flat = _flat_name(report_id, item)
             dst = data_dir / flat
             if flat not in materialized:
-                tidy = _source_tidy_path(report_id, table_id, derived_dir)
-                if not tidy.exists():
-                    # Regenerate tidy từ wide raw (evidence/ stale do codegen cũ).
-                    wide = _source_wide_path(report_id, table_id, derived_dir)
-                    if not wide.exists():
-                        raise FileNotFoundError(f"thiếu wide raw để regenerate tidy: {wide}")
-                    uf = unit_factors.get((report_id, table_id), 1.0)
-                    tidy_df = wide_csv_to_tidy(wide, uf)
-                    tidy.parent.mkdir(parents=True, exist_ok=True)
-                    write_tidy_csv(tidy_df, tidy)  # rỗng → ghi header-only (query → 0.0)
-                    regen_count += 1
-                    if tidy_df.empty:
-                        print(f"   ⚠️ wide→tidy rỗng (header-only): {wide.name}")
-                shutil.copyfile(tidy, dst)
+                if item in STATEMENTS:
+                    # Bảng gộp statement — chỉ có ở evidence_merged (ETL), không regen.
+                    src = _source_merged_path(report_id, item, derived_dir)
+                    if not src.exists():
+                        raise FileNotFoundError(
+                            f"thiếu bảng gộp {src.name} — chạy scripts/run_merged_evidence.py"
+                        )
+                else:
+                    src = _source_tidy_path(report_id, item, derived_dir)
+                    if not src.exists():
+                        # Regenerate tidy từ wide raw (evidence/ stale do codegen cũ).
+                        wide = _source_wide_path(report_id, item, derived_dir)
+                        if not wide.exists():
+                            raise FileNotFoundError(f"thiếu wide raw để regenerate tidy: {wide}")
+                        uf = unit_factors.get((report_id, item), 1.0)
+                        tidy_df = wide_csv_to_tidy(wide, uf)
+                        src.parent.mkdir(parents=True, exist_ok=True)
+                        write_tidy_csv(tidy_df, src)  # rỗng → ghi header-only (query → 0.0)
+                        regen_count += 1
+                        if tidy_df.empty:
+                            print(f"   ⚠️ wide→tidy rỗng (header-only): {wide.name}")
+                shutil.copyfile(src, dst)
                 materialized.add(flat)
             new_evidence.append({"variable": var, "csv_path": f"data/{flat}"})
         rec["evidence"] = new_evidence

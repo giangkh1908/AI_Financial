@@ -222,11 +222,24 @@ def header_signature(grid: TableGrid) -> tuple:
     )
 
 
+def layout_signature(layout) -> tuple:
+    """Chữ ký layout chuẩn hoá để gom fragment.
+
+    (len(period_cols), code_col, label_col) — đủ để nhận biết 2 fragment cùng
+    statement có cùng cấu trúc cột hay không. Không gồm period_keys/years vì
+    các fragment tiếp theo (trang sau) có thể khác năm; chỉ cần số cột kỳ.
+    """
+    if layout is None:
+        return None
+    return (len(layout.period_cols), layout.code_col, layout.label_col)
+
+
 @dataclass
 class Fragment:
     grid: TableGrid
     table_id: str
     header_idx: int
+    layout: object = None  # TableLayout chuẩn hoá (từ format_classify)
 
 
 @dataclass
@@ -256,22 +269,47 @@ def build_asset(stmt: str, fragments: list[Fragment], unit_factor: float,
     """Xây asset từ các fragment cùng (stmt, signature).
 
     Lấy header/period/code/label col từ fragment đầu; giả định các fragment còn
-    lại cùng cấu trúc (đã kiểm tra bằng header_signature khi gom).
+    lại cùng cấu trúc (đã kiểm tra bằng layout_signature/header_signature khi gom).
+    Nếu fragment có `layout` (format_classify) → dùng layout đó (chuẩn hoá mọi
+    format: DN VAS / ngân hàng / chứng khoán / header 2 tầng).
     """
     first = fragments[0]
-    header_idx = first.header_idx
-    header_row = first.grid.rows[header_idx] if header_idx < first.grid.n_rows else []
-    periods = _period_columns(header_row)
-    period_cols = [p[0] for p in periods]
-    period_keys = [p[1] for p in periods]
-    period_labels = [p[3] for p in periods]
-    code_col = find_item_code_col(first.grid, header_idx)
-    label_col = _label_column(first.grid, header_idx, period_cols, code_col)
+    lay = getattr(first, "layout", None)
+
+    if lay is not None and lay.period_cols:
+        # FORMAT CHUNG: dùng TableLayout (rowspan-aware, 2-tầng header)
+        header_idx = lay.header_idx
+        period_row_idx = lay.period_row_idx
+        header_row = first.grid.rows[period_row_idx] if period_row_idx < first.grid.n_rows else []
+        periods = _period_columns(header_row)
+        period_cols = lay.period_cols
+        period_keys = [p[1] for p in periods]
+        period_labels = [p[3] for p in periods]
+        if len(period_keys) < len(period_cols):
+            period_keys += [""] * (len(period_cols) - len(period_keys))
+            period_labels += [""] * (len(period_cols) - len(period_labels))
+        code_col = lay.code_col
+        label_col = lay.label_col
+        unit_factor = lay.unit_factor or unit_factor
+        unit_label = lay.unit_label or unit_label
+        number_format = lay.number_format
+    else:
+        # fallback legacy: heuristic cột (không layout — notes/edge)
+        header_idx = first.header_idx
+        header_row = first.grid.rows[header_idx] if header_idx < first.grid.n_rows else []
+        periods = _period_columns(header_row)
+        period_cols = [p[0] for p in periods]
+        period_keys = [p[1] for p in periods]
+        period_labels = [p[3] for p in periods]
+        code_col = find_item_code_col(first.grid, header_idx)
+        label_col = _label_column(first.grid, header_idx, period_cols, code_col)
+        number_format = "vi"
+
     # detect format số trên toàn bộ ô giá trị của mọi fragment (en: FPT/DBC/VGC)
     value_cells: list[str] = []
     for frag in fragments:
         g = frag.grid
-        for r in range(frag.header_idx + 1, g.n_rows):
+        for r in range(g.n_rows):
             row = g.rows[r]
             for pc in period_cols:
                 if pc < len(row):
@@ -296,14 +334,15 @@ def build_asset(stmt: str, fragments: list[Fragment], unit_factor: float,
 
 
 def group_statement_fragments(
-    tables: list[tuple[int, str, TableGrid, str, str | None, float, str]],
+    tables: list[tuple],
 ) -> list[tuple[str, list[Fragment], float, str]]:
-    """Gom table liên tiếp cùng (statement, header_signature) → list asset groups.
+    """Gom table liên tiếp cùng (statement, layout_signature) → list asset groups.
 
     `tables`: danh sách theo thứ tự report, mỗi phần tử
-        (table_idx, table_id, grid, anchor, statement|None, unit_factor, unit_label).
+        (table_idx, table_id, grid, anchor, statement|None, unit_factor, unit_label, layout|None).
     Trả list (statement, [Fragment, ...], unit_factor, unit_label) cho các group
-    có statement không None (≥1 fragment).
+    có statement không None (≥1 fragment). Fragment mang `layout` chuẩn hoá
+    (nếu có) để build_asset dùng làm FORMAT CHUNG.
     """
     groups: list[tuple[str, list[Fragment], float, str]] = []
     cur_stmt: str | None = None
@@ -318,16 +357,19 @@ def group_statement_fragments(
             groups.append((cur_stmt, list(cur_frags), cur_unit_factor, cur_unit_label))
         cur_stmt, cur_sig, cur_frags = None, None, []
 
-    for table_idx, table_id, grid, anchor, stmt, uf, ul in tables:
+    for item in tables:
+        table_idx, table_id, grid, anchor, stmt, uf, ul = item[:7]
+        layout = item[7] if len(item) > 7 else None
         if grid.n_rows == 0:
             _flush()
             continue
         header_idx = find_header_row(grid)
-        frag = Fragment(grid=grid, table_id=table_id, header_idx=header_idx)
+        frag = Fragment(grid=grid, table_id=table_id, header_idx=header_idx, layout=layout)
         if stmt is None:
             _flush()
             continue
-        sig = header_signature(grid)
+        # signature: layout chuẩn hoá nếu có (rowspan-aware), fallback legacy
+        sig = layout_signature(layout) if layout is not None else header_signature(grid)
         if stmt == cur_stmt and sig == cur_sig and cur_frags:
             cur_frags.append(frag)
         else:
@@ -355,6 +397,8 @@ def emit_facts(asset: StatementAsset, ticker: str, year: int,
     last_label = ""
     thousands = "," if asset.number_format == "en" else "."
     decimal = "." if asset.number_format == "en" else ","
+    # cell code+label gộp chung: "01 Lợi nhuận..." (FOX/GAS/VJC CF) — tách tiền tố mã
+    fused_code_re = re.compile(r"^(?P<code>\d{1,4}[a-z]?)\s+(?P<label>\S.*)$")
     for frag in asset.fragments:
         grid = frag.grid
         for r in range(frag.header_idx + 1, grid.n_rows):
@@ -370,6 +414,14 @@ def emit_facts(asset: StatementAsset, ticker: str, year: int,
                 code_raw = row[asset.code_col].strip()
             # chỉ giữ mã khớp regex; phần rác (vd "TỔNG THU NHẬP...") → ""
             item_code = code_raw if _is_code_token(code_raw) else ""
+
+            # cell gộp "01 Lợi nhuận..." → tách mã + label (nếu label_col không có text thật)
+            if not item_code and code_raw:
+                m = fused_code_re.match(code_raw)
+                if m:
+                    item_code = m.group("code")
+                    if not label_raw:
+                        label_raw = m.group("label")
 
             values: list[float | None] = []
             has_value = False
@@ -392,6 +444,11 @@ def emit_facts(asset: StatementAsset, ticker: str, year: int,
                 if item_code in seen_codes:
                     continue
                 seen_codes.add(item_code)
+
+            # dòng số cột OCR ("1 2 3 4 5") — label/code đều là số nhỏ, không phải chỉ tiêu
+            if re.fullmatch(r"\d{1,3}(\.\d+)?", label_raw.strip()):
+                if item_code == "" or re.fullmatch(r"\d{1,2}", item_code):
+                    continue
 
             for pc, pk, pl, v in zip(
                 asset.period_cols, asset.period_keys, asset.period_labels, values

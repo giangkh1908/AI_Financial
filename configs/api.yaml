@@ -8,8 +8,8 @@ paths:
   out_dir: data/out
 
 retrieval:
-  k: 10
-  rerank_depth: 100
+  k: 5
+  rerank_depth: 30
 
 sandbox:
   timeout: 20
@@ -30,3 +30,13 @@ llm:
   extra_headers:
     HTTP-Referer: https://github.com/KimHo-GURU   # optional: định danh nguồn gọi
     X-Title: ViFinQA-GURU                         # optional: tên app trên OpenRouter
+
+retrieval:
+  embedding:
+    provider: openrouter         # OpenRouter embeddings — nvidia/nemotron-3-embed-1b:free (free, dim 2048)
+    model: nvidia/nemotron-3-embed-1b:free
+    dense_dim: 2048              # nemotron-3-embed-1b = 2048 (khác bge-m3 1024)
+    max_chars: 2000              # chunk ~600-700 token, dưới ctx model
+    batch_size: 100              # OpenRouter xử lý batch lớn tốt — không cần batch nhỏ như GPU thuê
+    workers: 12                  # song song API calls
+    cache_dir: data/derived/embeddings

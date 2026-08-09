@@ -157,7 +157,7 @@ const CHANGES_TODAY = [
   '',
   'NET EFFECT: relevant_tables output is now report_id|<line> (spec format). csv_path filename still table_N. No Qdrant re-index needed (search stays table_id internally). No codegen re-run needed (results.jsonl keeps table_N; builder rewrites at packaging). To test TABLES_F2: rebuild submission + submit.',
   '',
-  'RISK: spec example |350 does NOT match a real <table> line in the AAA 2015 file (table_1 is at line 19, not 350) => the example may be purely illustrative OR BTC counts lines differently. No gold available to verify our line counting matches BTC exactly. But line-format is clearly the literal spec and more correct than table_N (which gave F2=0). If still 0 after resubmit, ask BTC for ocr_filter/numbering clarification.',
+  'RISK: spec example |350 does NOT match a real <table> line in the AAA 2015 file (table_1 is at line 19, not 350) => the example may be purely illustrative OR BTC counts lines differently. No gold available to verify our line counting matches BTC exactly. But line-format is clearly the literal spec and more correct than table_N (which gave F2=0). If still 0 after resubmit, investigate alternative line-counting schemes ourselves (see Section 6 item A).',
 ].join('\n')
 
 const SESSION_FINDINGS = [
@@ -201,7 +201,7 @@ const synthPrompt = 'You are rewriting D:\\GURU\\MEMORY.md to be a comprehensive
   '- Section 6 (milestones + leaderboard): (A) TABLES_F2=0 was likely due to WRONG format (table_N not line); NOW FIXABLE — ETL records start_line, builder outputs report_id|<line>. Code fix DONE this session; pending rebuild+resubmit to test. Keep risk note (line-counting variant, no gold).\n' +
   '- Section 7: full session findings (codegen retry + wall-cap) verbatim-ish from SESSION_FINDINGS, PLUS a subsection "7b. relevant_tables format fix" summarizing CHANGES_TODAY.\n' +
   '- Section 8 (gotchas): correct relevant_tables to line format; note the 6/8 "fix" to table_N was wrong-direction; csv_path filename separate (table_N).\n' +
-  '- Section 9 (next steps): update — (1) run smoke_fmt_100.py to verify format, (2) rebuild full submission (build_submission.py) with line-format relevant_tables, (3) submit, observe TABLES_F2 (expect >0 if line-counting matches BTC), (4) phase-time solve() for codegen wall-cap, (5) re-codegen 1012 with retry fixes, (6) M5 ReAct, (7) M7 dev-set, (8) ask BTC if F2 still 0, (9) working notes paper.\n' +
+  '- Section 9 (next steps): update — (1) run smoke_fmt_100.py to verify format, (2) rebuild full submission (build_submission.py) with line-format relevant_tables, (3) submit, observe TABLES_F2 (expect >0 if line-counting matches BTC), (4) phase-time solve() for codegen wall-cap, (5) re-codegen subset with retry fixes, (6) M5 ReAct, (7) M7 dev-set, (8) submit high-quality subset instead of full 1012 (gold=506 only; avoid fallback-0.0 dragging average), (9) working notes paper. No dependencies on BTC answers — all decisions self-determined.\n' +
   '- Section 10: sources.\n' +
   '\n' +
   'RULES:\n' +

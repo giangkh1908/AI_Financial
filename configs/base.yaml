@@ -8,13 +8,13 @@ paths:
   out_dir: data/out
 
 retrieval:
-  k: 10                    # top-k bảng trả về cho agent
-  rerank_depth: 100        # số bảng đưa vào hybrid query (dense+sparse)
+  k: 10                    # top-k bảng trả về cho agent (5→10: bảng đúng hay rank 6-8 vd Q19 tỷ lệ biểu quyết, Q7 quỹ khen thưởng)
+  rerank_depth: 30         # TEST B: 100→30 — giảm noise sau fusion
   engine: qdrant
   use_dense: true          # Vector Index Search (HNSW) — kênh CHÍNH
-  use_sparse: true         # Qdrant sparse (TF/BM25 local) — kênh phụ
+  use_sparse: false        # TEST dense-only: sparse TF/IDF gây nhiễu tiếng Việt (miss table_50 Q1 mà dense rank đúng)
   fusion: native           # Qdrant FusionQuery(RRF)
-  statement_bonus: 0.001   # M3.1: giảm từ 0.05 — RRF max ≈0.0328, 0.05 thành hard filter; 0.001 = nudge tie-break (≈3% max RRF)
+  statement_bonus: 0.01    # TEST A: 0.001→0.01 — nudge statement mạnh hơn cho câu có hint rõ (Q1 VJC Lãi tiền gửi)
   embedding:
     provider: openrouter   # reuse LLMConfig base_url/key
     model: baai/bge-m3

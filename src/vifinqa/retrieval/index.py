@@ -116,7 +116,27 @@ def build_payload(row: dict, text_dense: str) -> dict:
         "unit_factor": float(row["unit_factor"]) if row["unit_factor"] else 1.0,
         "header_text": _truncate_chars(row["header_text"] or "", 400),
         "row_labels": _truncate_chars(row["row_labels"] or "", 600),
+        "period_cols": _period_cols_list(row.get("period_cols")),
     }
+
+
+def _period_cols_list(s) -> list[int]:
+    """'[3, 4]' (JSON trong catalog) → [3, 4]; fallback parse '3;4'."""
+    if not s:
+        return []
+    import json as _json
+
+    try:
+        v = _json.loads(s)
+        return [int(x) for x in v] if isinstance(v, list) else []
+    except (ValueError, TypeError):
+        pass
+    out = []
+    for part in str(s).replace("[", "").replace("]", "").split(","):
+        part = part.strip()
+        if part.isdigit():
+            out.append(int(part))
+    return out
 
 
 def iter_catalog_tables(catalog_path: Path, cfg: RetrievalConfig, tickers: set[str] | None = None):
@@ -159,38 +179,60 @@ def _new_openai_client(cfg: Config) -> OpenAI:
     )
 
 
-def embed_dense(client: OpenAI, texts: list[str], cfg: RetrievalConfig) -> np.ndarray:
-    """Embed batch qua OpenRouter Embeddings API → [N, dense_dim] float32.
+def _ngrok_embed(url: str, texts: list[str], timeout: float = 120.0) -> list[list[float]]:
+    """Gọi `/embed` (BGE-M3 FastAPI trên GPU thuê) → list dense vectors (JSON)."""
+    import json as _json
+    import urllib.error as _urlerr
+    import urllib.request as _urlreq
 
-    Các API calls độc lập → chạy song song (`embedding.workers`) để full corpus
-    ~10-15 phút thay vì ~1h tuần tự. OpenAI client thread-safe.
+    body = _json.dumps({"texts": texts, "return_dense": True}).encode("utf-8")
+    req = _urlreq.Request(url.rstrip("/") + "/embed", data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    try:
+        with _urlreq.urlopen(req, timeout=timeout) as r:
+            resp = _json.loads(r.read().decode("utf-8"))
+    except _urlerr.HTTPError as e:
+        raise ConnectionError(f"ngrok /embed HTTP {e.code}: {e.read().decode()[:200]}") from e
+    dense = resp.get("dense")
+    if not dense:
+        raise ValueError(f"ngrok /embed không trả dense: {resp}")
+    return dense
+
+
+def embed_dense(client: object, texts: list[str], cfg: RetrievalConfig) -> np.ndarray:
+    """Embed batch → [N, dense_dim] float32 — đa provider.
+
+    - provider=ngrok (Colab GPU BGE-M3 `/embed`) → urllib, không cần key.
+    - provider=openrouter (mặc định cũ) → OpenAI embeddings API.
+    Các API calls độc lập → chạy song song (`embedding.workers`).
     """
     from concurrent.futures import ThreadPoolExecutor
 
-    batch = cfg.embedding.batch_size
+    emb = cfg.embedding
+    use_ngrok = emb.provider == "ngrok"
+    url = emb.base_url or ""
+    batch = emb.batch_size
     batches = [texts[i : i + batch] for i in range(0, len(texts), batch)]
     results: list[list[list[float]]] = [None] * len(batches)  # type: ignore[list-item]
 
     def _run(i: int, chunk: list[str]) -> tuple[int, list[list[float]]]:
         import random as _random
         import time as _time
-        from openai import APIStatusError, APITimeoutError, APIConnectionError
 
-        for attempt in range(5):  # retry 429/5xx/timeout với backoff mũ + jitter
+        for attempt in range(5):  # retry transient lỗi với backoff mũ + jitter
             try:
-                resp = client.embeddings.create(model=cfg.embedding.model, input=chunk)
+                if use_ngrok:
+                    return i, _ngrok_embed(url, chunk)
+                # encoding_format: bỏ base64 (Nvidia nemotron embed không hỗ trợ; dùng float)
+                resp = client.embeddings.create(model=emb.model, input=chunk, encoding_format="float")  # type: ignore[union-attr]
                 return i, [d.embedding for d in resp.data]
-            except (APITimeoutError, APIConnectionError) as e:
-                if attempt == 4:
-                    raise
-                _time.sleep((2 ** attempt) + _random.uniform(0, 1))
-            except APIStatusError as e:
-                # Chỉ retry lỗi tạm thời (429 overloaded, 5xx). 401/403/404 raise ngay.
-                if attempt == 4 or e.status_code not in (429, 500, 502, 503, 504):
+            except Exception as e:  # noqa: BLE001 — retry tạm thời (timeout/5xx/conn)
+                transient = any(t in type(e).__name__ for t in ("Timeout", "Connection", "HTTP"))
+                if attempt == 4 or not transient:
                     raise
                 _time.sleep((2 ** attempt) + _random.uniform(0, 1))
 
-    workers = min(cfg.embedding.workers, len(batches) or 1)
+    workers = min(emb.workers, len(batches) or 1)
     with ThreadPoolExecutor(max_workers=workers) as ex:
         for i, vecs in ex.map(_run, range(len(batches)), batches):
             results[i] = vecs
@@ -232,6 +274,19 @@ def ensure_collection(client: QdrantClient, cfg: RetrievalConfig) -> None:
             )
         },
     )
+    # Payload index tường minh — filter trong vector search (HNSW) cần index; nếu để
+    # Qdrant tự tạo, có thể trả 0 kết quả khi kết hợp nhiều field (AND) giữa lúc build
+    # (đã gặp: ticker+year filter → 0 dù payload có, scroll lại OK).
+    for field_name, field_schema in (
+        ("year", models.PayloadSchemaType.INTEGER),
+        ("ticker", models.PayloadSchemaType.KEYWORD),
+        ("report_type", models.PayloadSchemaType.KEYWORD),
+        ("statement", models.PayloadSchemaType.KEYWORD),
+    ):
+        try:
+            client.create_payload_index(col, field_name=field_name, field_schema=field_schema)
+        except Exception:  # noqa: BLE001 — đã tồn tại / không hỗ trợ → bỏ qua
+            pass
 
 
 def build_ticker(
