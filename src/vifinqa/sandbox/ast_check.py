@@ -16,6 +16,7 @@ truy cập thường (`.iloc`, `.loc`, `.str`, `.apply`).
 from __future__ import annotations
 
 import ast
+import re
 
 # Call / attribute / name bị chặn (đã normalize lowercase).
 _BLOCKED_CALLS: set[str] = {
@@ -37,6 +38,10 @@ _BLOCKED_ATTRS: set[str] = {
     "__dict__", "__getattribute__", "__setattr__", "__delattr__",
 }
 
+# Pattern vòng lặp quét toàn bộ bảng evidence — gây query cồng kềnh (>800 AST
+# nodes), chậm, và hay chọn nhầm bảng. Cấm: `for df in [df1, df2, ...]`.
+_DF_NAME_RE = re.compile(r"^df\d+$")
+
 
 class _Visitor(ast.NodeVisitor):
     """Đếm node + chặn construct nguy hiểm. Raise ValueError ở node lỗi đầu tiên."""
@@ -53,6 +58,19 @@ class _Visitor(ast.NodeVisitor):
     def generic_visit(self, node: ast.AST) -> None:
         self._tick()
         super().generic_visit(node)
+
+    def visit_For(self, node: ast.For) -> None:
+        # Cấm `for df in [df1, df2, ...]` — quét tất cả bảng evidence
+        if isinstance(node.iter, ast.List):
+            items = node.iter.elts
+            if len(items) >= 2 and all(
+                isinstance(i, ast.Name) and _DF_NAME_RE.match(i.id) for i in items
+            ):
+                raise ValueError(
+                    "vòng lặp `for df in [df1, df2, ...]` bị cấm — phải truy cập "
+                    "TRỰC TIẾP dfN của bảng đã chọn (vd df3[\"Mãsố\"])"
+                )
+        self.generic_visit(node)
 
     def visit_Import(self, node: ast.Import) -> None:
         names = ", ".join(a.name for a in node.names)

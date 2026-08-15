@@ -14,15 +14,19 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
 import re
+import threading
+import time
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 from openai import OpenAI
 from qdrant_client import QdrantClient, models
 
-from vifinqa.config import Config, RetrievalConfig, ROOT
+from vifinqa.config import Config, EmbeddingConfig, EmbedProviderRef, RetrievalConfig, ROOT
 from vifinqa.etl.numbers import normalize_label
 
 # Namespace cố định cho point id (không đổi giữa các lần build)
@@ -168,15 +172,127 @@ def load_fact_labels(facts_all_path: Path) -> dict[tuple[str, int, str, str], li
     return out
 
 
-def _new_openai_client(cfg: Config) -> OpenAI:
-    llm = cfg.llm
-    return OpenAI(
-        base_url=llm.base_url,
-        api_key=llm.effective_api_key(),
-        timeout=llm.timeout,
-        max_retries=llm.retries,
-        default_headers=llm.extra_headers or None,
-    )
+@dataclass
+class _EmbedEndpoint:
+    """Một endpoint embed trong fallback chain.
+
+    kind='openai'   → OpenAI-compatible embeddings API (deepinfra/openai_compatible/openrouter/vllm).
+    kind='http_bge' → HTTP `/embed` của bge_m3_server (provider ngrok/http_bge, không cần SDK/key).
+    """
+    kind: str
+    base_url: str
+    model: str
+    dim: int
+    client: OpenAI | None = None      # cho kind='openai'
+    provider: str = ""
+
+
+_HTTP_PROVIDERS = {"ngrok", "http_bge"}
+
+
+def _endpoint_from_embedding(emb: EmbeddingConfig) -> _EmbedEndpoint:
+    """Primary endpoint từ cfg.retrieval.embedding (EmbeddingConfig)."""
+    if emb.provider in _HTTP_PROVIDERS:
+        return _EmbedEndpoint("http_bge", emb.base_url, emb.model, emb.dense_dim, None, emb.provider)
+    client = OpenAI(base_url=emb.base_url, api_key=emb.effective_api_key(), timeout=60.0, max_retries=1)
+    return _EmbedEndpoint("openai", emb.base_url, emb.model, emb.dense_dim, client, emb.provider)
+
+
+def _endpoint_from_ref(ref: EmbedProviderRef) -> _EmbedEndpoint:
+    """Fallback endpoint từ cfg.retrieval.embedding.fallbacks[i] (EmbedProviderRef)."""
+    if ref.provider in _HTTP_PROVIDERS:
+        return _EmbedEndpoint("http_bge", ref.base_url, ref.model, ref.dense_dim, None, ref.provider)
+    client = OpenAI(base_url=ref.base_url, api_key=ref.effective_api_key(), timeout=60.0, max_retries=1)
+    return _EmbedEndpoint("openai", ref.base_url, ref.model, ref.dense_dim, client, ref.provider)
+
+
+class Embedder:
+    """Fallback chain embed: primary + fallbacks, sticky-first + cooldown 30s.
+
+    Thread-safe (sticky/cooldown dưới lock; bản thân call embed I/O chạy song song).
+    Dim guard: mọi endpoint phải cùng dim với primary — tránh embed sai dim làm hỏng index.
+    """
+
+    _COOLDOWN = 30.0
+
+    def __init__(self, endpoints: list[_EmbedEndpoint]):
+        if not endpoints:
+            raise ValueError("Embedder cần ≥1 endpoint")
+        self._eps = endpoints
+        self._dim = endpoints[0].dim
+        for ep in endpoints:
+            if ep.dim != self._dim:
+                raise ValueError(
+                    f"Embed fallback dim mismatch: endpoint {ep.provider} {ep.base_url} "
+                    f"dim={ep.dim} ≠ primary dim={self._dim}. Qdrant collection fix dim → "
+                    f"phải cùng dim tất cả fallback."
+                )
+        self._sticky = 0
+        self._failed_until: dict[int, float] = {}
+        self._lock = threading.Lock()
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    def _order(self) -> list[int]:
+        now = time.time()
+        alive = [i for i in range(len(self._eps)) if self._failed_until.get(i, 0.0) <= now]
+        if not alive:
+            alive = list(range(len(self._eps)))
+        with self._lock:
+            sticky = self._sticky
+        if sticky in alive:
+            return [sticky] + [i for i in alive if i != sticky]
+        return alive
+
+    def _embed_batch(self, idx: int, chunk: list[str]) -> list[list[float]]:
+        """Embed 1 batch qua endpoint idx (in-provider retry 5 lần transient)."""
+        ep = self._eps[idx]
+        if ep.kind == "http_bge":
+            return _ngrok_embed(ep.base_url, chunk)
+        assert ep.client is not None
+        resp = ep.client.embeddings.create(model=ep.model, input=chunk, encoding_format="float")
+        return [d.embedding for d in resp.data]
+
+    def embed(self, texts: list[str]) -> np.ndarray:
+        """Embed list text → [N, dim] float32. Thử chain; transient endpoint fail → nhảy.
+
+        KHÔNG tự retry ở cấp chain cho 1 batch (embed_dense đã chạy batch song song và
+        từng batch có retry-in-provider trong _run). Endpoint fail toàn bộ → đánh dấu
+        cooldown rồi raise để embed_dense bắt và thử lại batch ở endpoint khác.
+        """
+        idx = self._order()[0]  # batch này dùng endpoint sticky/alive đầu tiên
+        try:
+            vecs = self._embed_batch(idx, texts)
+            with self._lock:
+                self._sticky = idx
+            return np.asarray(vecs, dtype=np.float32)
+        except Exception:
+            with self._lock:
+                self._failed_until[idx] = time.time() + self._COOLDOWN
+            # thử endpoint kế tiếp nếu còn
+            for idx2 in self._order():
+                if idx2 == idx:
+                    continue
+                try:
+                    vecs = self._embed_batch(idx2, texts)
+                    with self._lock:
+                        self._sticky = idx2
+                    return np.asarray(vecs, dtype=np.float32)
+                except Exception:
+                    with self._lock:
+                        self._failed_until[idx2] = time.time() + self._COOLDOWN
+            raise  # cả chain fail → raise (embed_dense/batch log error)
+
+
+def make_embedder(cfg: Config) -> Embedder:
+    """Build Embedder từ cfg.retrieval.embedding (primary) + .fallbacks."""
+    emb = cfg.retrieval.embedding
+    eps = [_endpoint_from_embedding(emb)]
+    for ref in emb.fallbacks:
+        eps.append(_endpoint_from_ref(ref))
+    return Embedder(eps)
 
 
 def _ngrok_embed(url: str, texts: list[str], timeout: float = 120.0) -> list[list[float]]:
@@ -199,45 +315,40 @@ def _ngrok_embed(url: str, texts: list[str], timeout: float = 120.0) -> list[lis
     return dense
 
 
-def embed_dense(client: object, texts: list[str], cfg: RetrievalConfig) -> np.ndarray:
-    """Embed batch → [N, dense_dim] float32 — đa provider.
+def embed_dense(embedder: Embedder, texts: list[str], cfg: RetrievalConfig) -> np.ndarray:
+    """Embed batch → [N, dense_dim] float32 qua Embedder (chain fallback).
 
-    - provider=ngrok (Colab GPU BGE-M3 `/embed`) → urllib, không cần key.
-    - provider=openrouter (mặc định cũ) → OpenAI embeddings API.
-    Các API calls độc lập → chạy song song (`embedding.workers`).
+    Chia nhỏ theo embedding.batch_size, chạy song song (embedding.workers). Mỗi batch tự
+    qua Embedder.embed (sticky-first + cooldown); cả chain fail → retry transient 5 lần rồi
+    raise (build script log error per ticker, giữ batch đi tiếp).
     """
     from concurrent.futures import ThreadPoolExecutor
 
     emb = cfg.embedding
-    use_ngrok = emb.provider == "ngrok"
-    url = emb.base_url or ""
+    if not texts:
+        return np.zeros((0, embedder.dim), dtype=np.float32)
     batch = emb.batch_size
     batches = [texts[i : i + batch] for i in range(0, len(texts), batch)]
-    results: list[list[list[float]]] = [None] * len(batches)  # type: ignore[list-item]
+    results: list[np.ndarray] = [None] * len(batches)  # type: ignore[list-item]
 
-    def _run(i: int, chunk: list[str]) -> tuple[int, list[list[float]]]:
+    def _run(i: int, chunk: list[str]) -> tuple[int, np.ndarray]:
         import random as _random
-        import time as _time
 
         for attempt in range(5):  # retry transient lỗi với backoff mũ + jitter
             try:
-                if use_ngrok:
-                    return i, _ngrok_embed(url, chunk)
-                # encoding_format: bỏ base64 (Nvidia nemotron embed không hỗ trợ; dùng float)
-                resp = client.embeddings.create(model=emb.model, input=chunk, encoding_format="float")  # type: ignore[union-attr]
-                return i, [d.embedding for d in resp.data]
+                return i, embedder.embed(chunk)
             except Exception as e:  # noqa: BLE001 — retry tạm thời (timeout/5xx/conn)
-                transient = any(t in type(e).__name__ for t in ("Timeout", "Connection", "HTTP"))
+                transient = any(t in type(e).__name__ for t in ("Timeout", "Connection", "HTTP")) or "429" in str(e)
                 if attempt == 4 or not transient:
                     raise
-                _time.sleep((2 ** attempt) + _random.uniform(0, 1))
+                time.sleep((2 ** attempt) + _random.uniform(0, 1))
 
     workers = min(emb.workers, len(batches) or 1)
     with ThreadPoolExecutor(max_workers=workers) as ex:
         for i, vecs in ex.map(_run, range(len(batches)), batches):
             results[i] = vecs
-    flat = [v for chunk in results for v in chunk]
-    return np.asarray(flat, dtype=np.float32)
+    arrs = [r for r in results if r is not None]
+    return np.concatenate(arrs, axis=0)
 
 
 def _texts_hash(texts: list[str]) -> str:
@@ -291,7 +402,7 @@ def ensure_collection(client: QdrantClient, cfg: RetrievalConfig) -> None:
 
 def build_ticker(
     client: QdrantClient,
-    embed_client: OpenAI,
+    embedder: Embedder,
     rows: list[dict],
     cfg: RetrievalConfig,
     fact_labels: dict[tuple[str, int, str, str], list[str]],
@@ -339,7 +450,7 @@ def build_ticker(
         except Exception:
             cache_hit = False
     if not cache_hit:
-        dense = embed_dense(embed_client, texts_dense, cfg)
+        dense = embed_dense(embedder, texts_dense, cfg)
         cache_dir.mkdir(parents=True, exist_ok=True)
         np.save(npy_path, dense)
         side_path.write_text(

@@ -79,7 +79,8 @@ def main() -> int:
 
     pipeline = RetrievalPipeline(cfg)
     facts_index = FactsIndex(cfg.resolved_derived_dir() / "facts_all.csv")
-    llm = LLMClient(cfg)
+    llm = LLMClient(cfg)  # head LLM (Qwen)
+    codegen_llm = LLMClient(cfg, section="codegen_llm") if cfg.codegen_llm else None  # deepseek-coder
 
     t0 = time.time()
     n_ok = n_fail = n_retry = 0
@@ -93,7 +94,7 @@ def main() -> int:
 
         def _worker():
             try:
-                qres.put(solve(q["question"], q["id"], pipeline, facts_index, llm, cfg))
+                qres.put(solve(q["question"], q["id"], pipeline, facts_index, llm, cfg, codegen_llm=codegen_llm))
             except Exception as e:  # guard lỗi — không brick batch
                 qres.put({"_exc": e})
 

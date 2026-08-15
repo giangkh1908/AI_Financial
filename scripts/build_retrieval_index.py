@@ -29,12 +29,11 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from vifinqa.config import Config  # noqa: E402
 from vifinqa.retrieval.index import (  # noqa: E402
-    _new_openai_client,
     build_ticker,
-    embed_dense,
     ensure_collection,
     iter_catalog_tables,
     load_fact_labels,
+    make_embedder,
     make_qdrant_client,
 )
 
@@ -44,6 +43,9 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=1, help="giữ tương thích; qdrant local là single process")
     ap.add_argument("--config", type=str, default="api.yaml")
     ap.add_argument("--tickers", type=str, default="", help="chỉ chạy các ticker, phân cách ','")
+    ap.add_argument("--rebuild", action="store_true",
+                    help="drop collection + xoá checkpoint retrieval_state.json rồi build lại "
+                         "(bắt buộc khi đổi dense_dim, vd nemotron 2048 → bge-m3 1024)")
     args = ap.parse_args()
 
     cfg = Config.load(ROOT / "configs" / args.config)
@@ -59,6 +61,20 @@ def main() -> int:
     try:
         catalog_path = derived_dir / "catalog_tables.csv"
         facts_path = derived_dir / "facts_all.csv"
+        state_path = derived_dir / "retrieval_state.json"
+
+        if args.rebuild:
+            # Đổi dense_dim (vd 2048→1024) ⇒ collection cũ sai dim → drop + xoá checkpoint để re-embed hết.
+            # Cache .npy tự invalidate theo (model, dim) nên không cần xoá tay.
+            try:
+                client.delete_collection(ret.qdrant.collection)
+                print(f"[rebuild] dropped collection '{ret.qdrant.collection}'")
+            except Exception as e:  # noqa: BLE001 — chưa tồn tại thì bỏ qua
+                print(f"[rebuild] drop collection skip: {type(e).__name__} {e}")
+            if state_path.exists():
+                state_path.unlink()
+                print("[rebuild] xoá retrieval_state.json (sẽ re-embed toàn bộ)")
+
         ensure_collection(client, ret)
         print(f"Collection '{ret.qdrant.collection}' sẵn sàng (HNSW m={ret.qdrant.hnsw_m}, ef_construct={ret.qdrant.hnsw_ef_construct}, INT8={ret.qdrant.quantize}, sparse={ret.qdrant.sparse_modifier})")
 
@@ -84,9 +100,7 @@ def main() -> int:
         todo = [t for t in by_ticker if (not wanted or t in wanted) and t not in state]
         print(f"Ticker tổng: {len(by_ticker)}, đã xong: {len(by_ticker) - len(todo)}, sẽ chạy: {len(todo)}")
 
-        embed_client = None
-        if ret.embedding.provider == "openrouter":
-            embed_client = _new_openai_client(cfg)  # chỉ cần client OpenAI cho openrouter
+        embedder = make_embedder(cfg)  # primary + fallbacks (local-first; không còn nhánh provider)
         total_pts = 0
         total_chars = 0
         total_hits = 0
@@ -94,7 +108,7 @@ def main() -> int:
         for i, ticker in enumerate(todo, 1):
             try:
                 rows = by_ticker[ticker]
-                n_pts, hits = build_ticker(client, embed_client, rows, ret, fact_labels, cache_dir)
+                n_pts, hits = build_ticker(client, embedder, rows, ret, fact_labels, cache_dir)
                 total_pts += n_pts
                 total_hits += hits
                 total_chars += sum(len(r["header_text"]) + len(r["row_labels"]) + len(r["anchor_context"]) for r in rows)

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -133,6 +134,153 @@ def _table_ref_to_line(key: str, start_lines: dict[tuple[str, str], int]) -> str
     return key
 
 
+_DF_VAR_RE = re.compile(r"\b(df\d+)\b")
+
+
+def _strip_vn_num_def(query: str) -> str:
+    """Bỏ phần `def vn_num(s): ...` ở đầu query (builder inject) để parse dfN."""
+    if not query or not query.startswith("def vn_num"):
+        return query
+    lines = query.split("\n")
+    end_def = 0
+    in_def = False
+    for i, line in enumerate(lines):
+        if line.startswith("def vn_num"):
+            in_def = True
+            continue
+        if in_def:
+            if line.strip() == "" or not line.startswith(" "):
+                end_def = i
+                break
+    if end_def:
+        return "\n".join(lines[end_def:]).strip()
+    return query
+
+
+def _used_df_vars(query: str) -> set[str]:
+    """Trả set các dfN được nhắc đến trong pandas_query (bỏ vn_num def)."""
+    if not query:
+        return set()
+    q = _strip_vn_num_def(query)
+    return set(_DF_VAR_RE.findall(q))
+
+
+def _renumber_query(query: str, var_map: dict[str, str]) -> str:
+    """Replace dfN trong query theo var_map. Chỉ thay code body (sau vn_num def).
+
+    Single-pass regex sub + dict lookup → KHÔNG chain (df14→df2 rồi df2→df1
+    sẽ KHÔNG biến df14 thành df1 — mỗi token chỉ replace 1 lần).
+    """
+    if not query or not var_map:
+        return query
+    if query.startswith("def vn_num"):
+        # Split: phần def + phần code body
+        body_start = len(query) - len(_strip_vn_num_def(query))
+        vn_part = query[:body_start]
+        body = query[body_start:]
+    else:
+        vn_part = ""
+        body = query
+
+    def _repl(m: re.Match) -> str:
+        return var_map.get(m.group(0), m.group(0))
+
+    new_body = _DF_VAR_RE.sub(_repl, body)
+    return vn_part + new_body
+
+
+def _filter_evidence_and_tables(
+    evidence: list[dict],
+    relevant_tables: list[str],
+    pandas_query: str,
+    *,
+    filter_rt: bool = True,
+) -> tuple[list[dict], list[str], str]:
+    """Lọc evidence + relevant_tables chỉ giữ bảng thực sự dùng trong pandas_query.
+
+    Trả (filtered_evidence, filtered_relevant_tables, updated_pandas_query).
+    - Phân tích pandas_query tìm các dfN được nhắc đến.
+    - Giữ chỉ evidence có variable trong set used.
+    - Renumber dfN (df1, df2, ...) theo thứ tự giữ lại + cập nhật pandas_query.
+    - relevant_tables: giữ chỉ table thuộc evidence còn lại (nếu filter_rt=True;
+      khi query thất bại → giữ nguyên để không mất recall).
+    """
+    if not evidence or not pandas_query:
+        return evidence, relevant_tables, pandas_query
+
+    used = _used_df_vars(pandas_query)
+    if not used:
+        # Query không nhắc dfN nào (vd `result = 0.0`) → giữ tất cả
+        return evidence, relevant_tables, pandas_query
+
+    # Lọc evidence: giữ chỉ ev có variable trong used
+    kept = [ev for ev in evidence if ev.get("variable") in used]
+    if not kept:
+        # LLM dùng biến không có trong evidence → giữ tất cả (safety)
+        return evidence, relevant_tables, pandas_query
+
+    # Renumber: df1, df2, ... theo thứ tự kept
+    var_map: dict[str, str] = {}
+    new_evidence: list[dict] = []
+    for i, ev in enumerate(kept):
+        old_var = ev["variable"]
+        new_var = f"df{i+1}"
+        if old_var != new_var:
+            var_map[old_var] = new_var
+        new_ev = dict(ev)
+        new_ev["variable"] = new_var
+        new_evidence.append(new_ev)
+
+    # Cập nhật pandas_query: replace dfN theo var_map
+    new_query = _renumber_query(pandas_query, var_map) if var_map else pandas_query
+
+    if not filter_rt:
+        # Query thất bại → giữ nguyên relevant_tables (không mất recall)
+        return new_evidence, relevant_tables, new_query
+
+    # Lọc relevant_tables: giữ chỉ table thuộc evidence còn lại
+    kept_rids: set[str] = set()
+    kept_tids: set[tuple[str, str]] = set()
+    for ev in new_evidence:
+        csv_path = ev.get("csv_path", "")
+        name = csv_path.split("/", 1)[-1]
+        if not name.endswith(".csv"):
+            continue
+        stem = name[:-4]
+        is_merged = False
+        for stmt in STATEMENTS:
+            m = f"__{stmt}"
+            if m in stem:
+                rid = stem[:stem.find(m)]
+                kept_rids.add(rid)
+                is_merged = True
+                break
+        if not is_merged:
+            marker = "__table_"
+            idx = stem.find(marker)
+            if idx >= 0:
+                rid = stem[:idx]
+                tid = "table_" + stem[idx + len(marker):]
+                kept_tids.add((rid, tid))
+
+    def _keep_table(key: str) -> bool:
+        if "|" not in key:
+            return True
+        rid = key.split("|")[0]
+        # Bảng gộp → giữ tất cả table cùng report_id
+        if rid in kept_rids:
+            return True
+        # Bảng đơn → match cụ thể (rid, tid)
+        if "table_" in key:
+            tid = "table_" + key.split("table_")[-1]
+            return (rid, tid) in kept_tids
+        # Line format (đã rewrite) → giữ nếu rid match (safety)
+        return any(rid == r for r in kept_rids) or any(rid == t[0] for t in kept_tids)
+
+    filtered_rt = [k for k in relevant_tables if _keep_table(k)]
+    return new_evidence, filtered_rt, new_query
+
+
 def _parse_evidence_var_and_src(ev: dict) -> tuple[str, str, str]:
     """`csv_path` = `data/{report_id}__{item}.csv` → (var, report_id, item).
 
@@ -230,8 +378,26 @@ def build(results_jsonl: Path, out_dir: Path, derived_dir: Path, questions_path:
     # Sắp xếp theo id + bỏ field nội bộ + nhúng vn_num self-contained
     out_list = []
     rewritten = 0
+    filtered_count = 0
     for q in sorted(records.values(), key=lambda r: r["id"]):
         clean = {k: v for k, v in q.items() if k not in _INTERNAL_FIELDS}
+
+        # Lọc evidence + relevant_tables: chỉ giữ bảng thực sự dùng trong pandas_query.
+        # Giúp TABLES_PRECISION tăng mạnh (15→1-3 tables/question).
+        # ⚠️ Chỉ lọc khi query THÀNH CÔNG (answer != 0) — khi thất bại, bảng used có thể
+        # SAI → lọc sẽ mất recall + cắt nhầm evidence. Giữ nguyên toàn bộ.
+        ev = clean.get("evidence") or []
+        rt = clean.get("relevant_tables") or []
+        pq = clean.get("pandas_query") or ""
+        answer = clean.get("answer")
+        if ev and rt and pq and answer not in (0.0, None) and pq.strip() != "result = 0.0":
+            new_ev, new_rt, new_pq = _filter_evidence_and_tables(ev, rt, pq)
+            if len(new_ev) < len(ev):
+                filtered_count += 1
+            clean["evidence"] = new_ev
+            clean["relevant_tables"] = new_rt
+            clean["pandas_query"] = new_pq
+
         if "pandas_query" in clean:
             clean["pandas_query"] = _with_vn_num(clean["pandas_query"])
         # relevant_tables: `rid|table_N` → `rid|<start_line>` (đặc tả BTC)
@@ -250,5 +416,6 @@ def build(results_jsonl: Path, out_dir: Path, derived_dir: Path, questions_path:
         "materialized": len(materialized),
         "tidy_regen": regen_count,
         "relevant_tables_rewritten": rewritten,
+        "evidence_filtered": filtered_count,
         "missing_ids": missing_ids,
     }

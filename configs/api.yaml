@@ -1,6 +1,7 @@
 # ============================================================
-# Chạy với API OpenRouter — LLM chính Qwen3.5-9B.
-# API key đọc từ env OPENROUTER_API_KEY (hoặc .env).
+# LLM codegen qua DeepInfra — Qwen3.5-9B (OpenAI-compatible).
+# API key đọc từ env DEEPINFRA_TOKEN (hoặc .env).
+# Embedding vẫn qua OpenRouter nemotron free.
 # ============================================================
 paths:
   data_dir: data
@@ -10,6 +11,14 @@ paths:
 retrieval:
   k: 5
   rerank_depth: 30
+  embedding:
+    provider: openrouter         # OpenRouter embeddings — nvidia/nemotron-3-embed-1b:free (free, dim 2048)
+    model: nvidia/nemotron-3-embed-1b:free
+    dense_dim: 2048              # nemotron-3-embed-1b = 2048 (khác bge-m3 1024)
+    max_chars: 2000              # chunk ~600-700 token, dưới ctx model
+    batch_size: 100              # OpenRouter xử lý batch lớn tốt — không cần batch nhỏ như GPU thuê
+    workers: 12                  # song song API calls
+    cache_dir: data/derived/embeddings
 
 sandbox:
   timeout: 20
@@ -20,23 +29,26 @@ answer_abs_tol: 0.01
 step_budget: 10
 
 llm:
-  provider: openrouter
-  base_url: https://openrouter.ai/api/v1
-  model_id: qwen/qwen3.5-9b
+  provider: deepinfra
+  base_url: https://api.deepinfra.com/v1/openai
+  model_id: Qwen/Qwen3.5-9B
   temperature: 0.0
-  max_tokens: 4096   # REVERT (M4b) — cap 2560 làm truncate code → "không trả code" + chặn repair path. 15 câu code-quá-dài nhờ retry rút gọn thành công. Giữ 4096.
-  timeout: 30.0
-  retries: 1
-  extra_headers:
-    HTTP-Referer: https://github.com/KimHo-GURU   # optional: định danh nguồn gọi
-    X-Title: ViFinQA-GURU                         # optional: tên app trên OpenRouter
+  max_tokens: 4096
+  timeout: 60.0
+  retries: 2
+  extra_headers: {}
+  thinking: false
 
-retrieval:
-  embedding:
-    provider: openrouter         # OpenRouter embeddings — nvidia/nemotron-3-embed-1b:free (free, dim 2048)
-    model: nvidia/nemotron-3-embed-1b:free
-    dense_dim: 2048              # nemotron-3-embed-1b = 2048 (khác bge-m3 1024)
-    max_chars: 2000              # chunk ~600-700 token, dưới ctx model
-    batch_size: 100              # OpenRouter xử lý batch lớn tốt — không cần batch nhỏ như GPU thuê
-    workers: 12                  # song song API calls
-    cache_dir: data/derived/embeddings
+# ---------- Codegen LLM (pandas expert) ----------
+# 2-stage: head LLM chọn bảng (call 1) → codegen LLM sinh query (call 2).
+# Cả 2 đều dùng Qwen3.5-9B qua DeepInfra.
+codegen_llm:
+  provider: deepinfra
+  base_url: https://api.deepinfra.com/v1/openai
+  model_id: Qwen/Qwen3.5-9B
+  temperature: 0.0
+  max_tokens: 4096
+  timeout: 60.0
+  retries: 2
+  extra_headers: {}
+  thinking: false

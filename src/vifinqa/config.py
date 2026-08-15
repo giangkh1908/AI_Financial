@@ -45,11 +45,81 @@ def _load_dotenv() -> None:
 _load_dotenv()
 
 
+def _env_api_key(provider: str, api_key: str) -> str:
+    """api_key từ config; nếu rỗng → resolve env theo provider.
+
+    Dùng chung cho LLMConfig / ProviderRef / EmbedProviderRef. vllm/ollama trả
+    placeholder non-empty (OpenAI SDK yêu cầu key khác rỗng dù server không check).
+    """
+    if api_key:
+        return api_key
+    if provider == "deepinfra":
+        for env_name in ("DEEPINFRA_TOKEN", "DEEPINFRA_API_KEY"):
+            val = os.environ.get(env_name)
+            if val:
+                return val
+        return ""
+    if provider == "ollama":
+        return "ollama"
+    if provider == "vllm":
+        return os.environ.get("VLLM_API_KEY") or "vllm"
+    # openrouter | openai_compatible | http_bge (http_bge không dùng SDK → key không quan trọng)
+    for env_name in ("OPENROUTER_API_KEY", "VIFINQA_API_KEY"):
+        val = os.environ.get(env_name)
+        if val:
+            return val
+    return ""
+
+
+class ProviderRef(BaseModel):
+    """Một endpoint OpenAI-compatible dùng làm fallback cho LLM.
+
+    provider = vllm | deepinfra | openai_compatible | ollama | openrouter
+    Kế thừa temperature/max_tokens/timeout/thinking từ LLMConfig primary (trừ khi ghi đè
+    ở đây). model_id bắt buộc vì mỗi provider có thể đặt tên model khác nhau.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str = "openai_compatible"
+    base_url: str = ""
+    api_key: str = ""          # rỗng → env theo provider
+    model_id: str = ""
+    timeout: float | None = None      # None → kế thừa primary
+    extra_headers: dict[str, str] = Field(default_factory=dict)
+    thinking: bool | None = None       # None → kế thừa primary
+
+    def effective_api_key(self) -> str:
+        return _env_api_key(self.provider, self.api_key)
+
+
+class EmbedProviderRef(BaseModel):
+    """Một endpoint embed dùng làm fallback (sau primary EmbeddingConfig).
+
+    provider = ngrok | http_bge | deepinfra | openai_compatible | openrouter
+    - ngrok/http_bge: HTTP `/embed` tới bge_m3_server (không cần key, không dùng SDK).
+    - deepinfra/openai_compatible/openrouter: OpenAI-compatible embeddings API.
+    dense_dim phải khớp primary (Embedder assert) — tránh embed sai dim làm hỏng index.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str = "openai_compatible"
+    base_url: str = ""
+    api_key: str = ""          # rỗng → env theo provider
+    model: str = ""
+    dense_dim: int = 1024
+
+    def effective_api_key(self) -> str:
+        return _env_api_key(self.provider, self.api_key)
+
+
 class LLMConfig(BaseModel):
     """Cấu hình LLM — dùng chung cho OpenRouter / OpenAI-compatible / vLLM.
 
-    provider = openrouter | openai_compatible | vllm
+    provider = openrouter | openai_compatible | vllm | deepinfra | ollama
     base_url là gốc OpenAI-compatible (vd https://openrouter.ai/api/v1).
+    fallbacks = list ProviderRef (thử sau primary; transient → nhảy).
     """
 
     # extra='forbid': key sai chính tả trong YAML phải raise, không bỏ im lặng
@@ -65,16 +135,11 @@ class LLMConfig(BaseModel):
     retries: int = 3
     extra_headers: dict[str, str] = Field(default_factory=dict)
     thinking: bool = False  # Qwen3 reasoning: tắt mặc định cho codegen (tránh overflow max_tokens + rẻ)
+    fallbacks: list[ProviderRef] = Field(default_factory=list)  # thử sau primary khi primary down
 
     def effective_api_key(self) -> str:
-        """Ưu tiên api_key trong config; fallback env var."""
-        if self.api_key:
-            return self.api_key
-        for env_name in ("OPENROUTER_API_KEY", "VIFINQA_API_KEY"):
-            val = os.environ.get(env_name)
-            if val:
-                return val
-        return ""
+        """Ưu tiên api_key trong config; fallback env var theo provider."""
+        return _env_api_key(self.provider, self.api_key)
 
 
 class EmbeddingConfig(BaseModel):
@@ -86,13 +151,19 @@ class EmbeddingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     provider: str = "openrouter"
-    base_url: str = ""               # endpoint trực tiếp (vd ngrok BGE-M3 `/embed`); "" = reuse LLMConfig
+    base_url: str = "https://openrouter.ai/api/v1"   # endpoint embed; ngrok/http_bge = URL bge_m3_server
+    api_key: str = ""          # rỗng → env theo provider (giống LLMConfig)
     model: str = "baai/bge-m3"
     dense_dim: int = 1024
     max_chars: int = 2000            # cap text_dense (≈ 512 tokens bge-m3)
     batch_size: int = 100            # texts / 1 API call
     workers: int = 12                # số API calls chạy song song (OpenAI client thread-safe)
     cache_dir: str = "data/derived/embeddings"   # cache .npy per ticker → resume không trả phí lại
+    fallbacks: list[EmbedProviderRef] = Field(default_factory=list)  # thử sau primary khi primary down
+
+    def effective_api_key(self) -> str:
+        """Ưu tiên api_key trong config; fallback env theo provider (giống LLMConfig)."""
+        return _env_api_key(self.provider, self.api_key)
 
 
 class SparseConfig(BaseModel):
@@ -181,6 +252,8 @@ class Config(BaseModel):
     answer_abs_tol: float = 0.01
     step_budget: int = 10
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    # LLM phụ cho codegen (pandas expert) — nếu không có thì fallback sang llm.
+    codegen_llm: LLMConfig | None = None
 
     # ---- paths tiện dụng ----
     @property

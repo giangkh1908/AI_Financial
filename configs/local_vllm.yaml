@@ -1,0 +1,54 @@
+# ============================================================
+# Local-AI + fallback — chạy trên GPU thuê (vLLM + bge_m3_server).
+# Kế thừa base.yaml (deep merge), chỉ ghi đè phần provider + fallback.
+# Local-first: vLLM (LLM) + bge_m3_server (embed). Cloud fallback = DeepInfra.
+#
+# Khởi động trên GPU thuê (chung 1 GPU, 2 port):
+#   1) python scripts/bge_m3_server.py        # port 8000, embed BGE-M3 1024-d (~10-20% VRAM)
+#   2) python scripts/vllm_qwen_server.py     # port 8001, Qwen3.5-9B vLLM (gpu-memory-fraction 0.65)
+# Trên máy local: đổi base_url http://localhost → http://<GPU_IP> (vd ngrok/vast IP).
+#
+# Đổi dense_dim 2048(nemotron cũ)→1024(bge-m3) ⇒ phải rebuild Qdrant collection:
+#   python scripts/build_retrieval_index.py --config local_vllm.yaml --rebuild
+# Cache .npy tự invalidate theo (model, dim); checkpoint xoá qua --rebuild.
+# ============================================================
+
+llm:
+  provider: vllm
+  base_url: http://localhost:8001/v1
+  api_key: vllm               # = VLLM_API_KEY khi khởi động vllm_qwen_server.py (mặc định 'vllm')
+  model_id: Qwen/Qwen3.5-9B
+  thinking: false             # Qwen3 reasoning OFF cho codegen (tránh ăn max_tokens)
+  fallbacks:
+    - provider: deepinfra
+      base_url: https://api.deepinfra.com/v1/openai
+      api_key: ""             # rỗng → env DEEPINFRA_TOKEN
+      model_id: Qwen/Qwen3.5-9B
+      thinking: false
+
+# codegen dùng cùng vLLM Qwen3.5-9B (head LLM kiêm pandas expert) + cùng fallback.
+# Không lặp temperature/max_tokens/timeout/thinking ⇒ kế thừa llm (deep merge).
+codegen_llm:
+  provider: vllm
+  base_url: http://localhost:8001/v1
+  api_key: vllm
+  model_id: Qwen/Qwen3.5-9B
+  fallbacks:
+    - provider: deepinfra
+      base_url: https://api.deepinfra.com/v1/openai
+      api_key: ""
+      model_id: Qwen/Qwen3.5-9B
+      thinking: false
+
+retrieval:
+  embedding:
+    provider: ngrok            # HTTP /embed tới bge_m3_server (không cần SDK/key)
+    base_url: http://localhost:8000
+    model: baai/bge-m3
+    dense_dim: 1024             # BGE-M3 1024-d (trùng fallback DeepInfra ⇒ Embedder dim-guard OK)
+    fallbacks:
+      - provider: deepinfra
+        base_url: https://api.deepinfra.com/v1/openai
+        api_key: ""            # rỗng → env DEEPINFRA_TOKEN
+        model: BAAI/bge-m3
+        dense_dim: 1024

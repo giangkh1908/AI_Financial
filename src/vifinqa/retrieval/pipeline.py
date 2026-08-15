@@ -8,7 +8,7 @@ import numpy as np
 
 from vifinqa.config import Config, ROOT
 from vifinqa.retrieval.entity import load_company_map, extract_entities, Entities
-from vifinqa.retrieval.index import _new_openai_client, embed_dense, make_qdrant_client, tf_sparse
+from vifinqa.retrieval.index import make_embedder, make_qdrant_client, tf_sparse
 from vifinqa.retrieval.search import (
     SearchResult,
     apply_statement_bonus,
@@ -25,7 +25,7 @@ class RetrievalPipeline:
         ret = cfg.retrieval
         self._cmap = load_company_map(cfg.resolved_data_dir() / "code_stock.csv")
         self._client = make_qdrant_client(ret)
-        self._embed_client = _new_openai_client(cfg) if ret.embedding.provider == "openrouter" else None
+        self._embedder = make_embedder(cfg)   # primary + fallbacks (local-first)
         self._reranker = None
         if ret.rerank.enabled:
             self._reranker = self._load_reranker(ret.rerank)
@@ -41,7 +41,7 @@ class RetrievalPipeline:
         return LocalReranker(model, device=rr.device)
 
     def _embed_query(self, question: str) -> np.ndarray:
-        return embed_dense(self._embed_client, [question], self.cfg.retrieval)[0]
+        return self._embedder.embed([question])[0]
 
     def search(self, question: str) -> tuple[list[SearchResult], Entities]:
         """Trả (top-k SearchResult, Entities) — top-k theo thứ tự liên quan."""

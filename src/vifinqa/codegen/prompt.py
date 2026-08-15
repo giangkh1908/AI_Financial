@@ -68,9 +68,11 @@ CHỈ DÙNG KHI bạn chắc chắn mã đó thật sự tồn tại trong bản
 
 QUY TẮC BẮT BUỘC:
 1. Truy cập bảng: Dùng CHÍNH XÁC variable names từ evidence (df1, df2, df3, ...).
-   ⚠️ LUÔN tìm metric ở TẤT CẢ các bảng evidence (df1, df2, ..., df10) — một báo cáo (BS/CF/income)
-   có thể bị tách thành NHIỀU bảng, metric cần nằm ở bảng bất kỳ, KHÔNG chỉ df1. Nếu chỉ tìm df1
-   mà không thấy, PHẢI try các bảng còn lại trước khi kết luận `result = 0.0`.
+   Mỗi bảng có "gợi ý mã số" và "dữ liệu (chi_tieu | Mãsố | ky | value)" — HÃY ĐỌC KỸ
+   để chọn ĐÚNG bảng chứa metric câu hỏi cần (đối chiếu mã số / label trong gợi ý).
+   ⚠️ CẤM TUYỆT ĐỐI viết vòng lặp `for df in [df1, df2, ...]` để quét tất cả bảng —
+   phải truy cập TRỰC TIẾP dfN của bảng đã chọn (vd `df3["Mãsố"]`). Nếu bảng chọn
+   không chứa metric, thử tối đa 1-2 bảng khác có gợi ý mã số liên quan, KHÔNG quét hết.
    TUYỆT ĐỐI CẤM tạo/gán lại DataFrame (`df1 = pd.DataFrame(...)`).
    Chỉ ĐỌC (lọc, chọn cột, tính toán). Có thể gán alias tạm `t = df1`.
    TUYỆT ĐỐI CẤM `dfs["..."]` (dfs không tồn tại).
@@ -197,6 +199,10 @@ def build_messages(
             f"Các variable names có sẵn: {var_names}\n"
             f"Thông tin bảng:\n{table_info}\n"
             f"BẠN PHẢI dùng CHÍNH XÁC các variable names trên (df1, df2, ...).\n"
+            f"⚠️ CẤM viết vòng lặp `for df in [df1, df2, ...]` để quét tất cả bảng!\n"
+            f"Thay vào đó: đọc 'gợi ý mã số' của từng bảng, chọn ĐÚNG bảng chứa metric\n"
+            f"(đối chiếu mã số/label), rồi truy cập TRỰC TIẾP dfN của bảng đó.\n"
+            f"Chỉ thử thêm tối đa 1-2 bảng liên quan nếu bảng đầu không có metric.\n"
             f"TUYỆT ĐỐI CẤM: `dfs[\"...\"]` — dfs KHÔNG TỒN TẠI.\n"
             f"VÍ DỤ ĐÚNG: `t = df1` hoặc `t = df2`\n"
             f"VÍ DỤ SAI: `t = dfs[\"df1\"]` hoặc `t = dfs[\"VJC_...|table_9\"]` → KeyError"

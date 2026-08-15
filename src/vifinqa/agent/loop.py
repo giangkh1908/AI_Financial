@@ -390,6 +390,252 @@ def _precheck_hint(
     )
 
 
+def _fill_evidence_gap(
+    entities: Entities,
+    evidence: dict[str, str],
+    evidence_plan: list[dict[str, Any]],
+    cards: list[dict[str, Any]],
+    usable: list[SearchResult],
+    derived_dir: Path,
+    facts_index: FactsIndex | None,
+) -> tuple[dict[str, str], list[dict[str, Any]], list[dict[str, Any]], list[SearchResult]]:
+    """Bổ sung balance_sheet + income cho từng ticker khi câu hỏi multi-company.
+
+    Khi câu hỏi nhắc ≥2 ticker, retrieval top-k có thể thiên vị 1 công ty →
+    thiếu balance_sheet/income của công ty khác. Hàm này quét evidence hiện có,
+    phát hiện (ticker, statement) thiếu, rồi nạp trực tiếp từ evidence_merged/.
+
+    Trả (evidence, evidence_plan, cards, usable) đã bổ sung.
+    """
+    if len(entities.tickers) < 2:
+        return evidence, evidence_plan, cards, usable
+
+    # Báo cáo nào đã có trong evidence cho mỗi ticker?
+    have: dict[str, set[str]] = {}
+    for ep in evidence_plan:
+        rid = ep["report_id"]
+        stmt = ep.get("name", "")
+        # rid = "BSR_financial_statements_2019_consolidated"
+        for t in entities.tickers:
+            if rid.startswith(t + "_"):
+                have.setdefault(t, set()).add(stmt)
+
+    # Cần balance_sheet + income cho mỗi ticker (nếu chưa có)
+    needed_stmts = {"balance_sheet", "income"}
+    # Nếu câu hỏi nhắc cash_flow, cũng bổ sung
+    if entities.statement and entities.statement not in needed_stmts:
+        needed_stmts.add(entities.statement)
+
+    # Year + report_type từ entities
+    years = sorted(entities.years) if entities.years else [None]
+    report_types = [entities.report_type] if entities.report_type else ["consolidated", "separate"]
+
+    table_to_stmt = _table_to_statement(derived_dir)
+    stmt_meta = _load_statement_meta(derived_dir)
+    merged_used = {(ep["report_id"], ep.get("name")) for ep in evidence_plan}
+
+    added = 0
+    for ticker in sorted(entities.tickers):
+        have_stmts = have.get(ticker, set())
+        missing = needed_stmts - have_stmts
+        if not missing:
+            continue
+        for year in years:
+            for rt in report_types:
+                for stmt in sorted(missing):
+                    if year is None:
+                        # Không có year → skip (không đoán được)
+                        continue
+                    rid = f"{ticker}_financial_statements_{year}_{rt}"
+                    if (rid, stmt) in merged_used:
+                        continue
+                    mpath = _merged_evidence_path(rid, stmt, derived_dir)
+                    if not mpath.exists():
+                        continue
+                    var_name = f"df{len(evidence_plan) + 1}"
+                    meta = stmt_meta.get((rid, stmt)) or {}
+                    frags = meta.get("src_table_ids") or []
+                    # Tạo SearchResult giả để _make_record nhận được relevant_docs/tables
+                    r_fake = SearchResult(
+                        report_id=rid, ticker=ticker, year=year, report_type=rt,
+                        table_id=frags[0] if frags else "merged",
+                        position=0, page_no=None, statement=stmt,
+                        is_statement=True, unit="VND", unit_factor=1.0,
+                        header_text="", row_labels="", score=0.0,
+                    )
+                    card = _build_table_card(
+                        r_fake, facts_index, derived_dir, var_name=var_name,
+                        evidence_path=mpath, fact_table_ids=frags, merged=True,
+                    )
+                    if card is None:
+                        continue
+                    key = f"{rid}|merged_{stmt}"
+                    if key in evidence:
+                        continue
+                    cards.append(card)
+                    usable.append(r_fake)
+                    evidence[key] = str(mpath)
+                    evidence_plan.append({
+                        "variable": var_name,
+                        "report_id": rid,
+                        "kind": "stmt",
+                        "name": stmt,
+                        "fragments": frags,
+                    })
+                    merged_used.add((rid, stmt))
+                    added += 1
+                    print(f"    [gap-fill] +{ticker} {stmt} {year} {rt} → {var_name}", flush=True)
+                    break  # tìm thấy cho stmt này → chuyển sang stmt kế
+
+    return evidence, evidence_plan, cards, usable
+
+
+def _head_select_tables(
+    llm: LLMClient,
+    question: str,
+    entities: Entities,
+    cards: list[dict[str, Any]],
+    evidence_plan: list[dict[str, Any]],
+    pre_hint: str | None,
+) -> set[str] | None:
+    """Stage 1 — head LLM (Qwen) chọn dfN cần cho câu hỏi.
+
+    Gửi danh sách bảng (variable + report + statement + vài chi_tieu mẫu) →
+    LLM trả JSON list tên biến. Trả None nếu parse fail (giữ nguyên evidence).
+
+    Lưu ý: trả ít nhất 2 biến (LLM có thể chọn sót) — bộ lọc bảo vệ ở solve().
+    """
+    lines = []
+    for ep, card in zip(evidence_plan, cards):
+        var = ep["variable"]
+        rid = ep["report_id"]
+        stmt = ep.get("name", "table")
+        chi_tieu = (card.get("sample_rows") or "").splitlines()[:3]
+        ct = " | ".join(chi_tieu)[:200]
+        lines.append(f"- {var}: {rid} [{stmt}] sample: {ct}")
+    listing = "\n".join(lines)
+
+    prompt = f"""Bạn là chuyên gia tài chính. Câu hỏi sau cần NHỮNG BẢNG NÀO để trả lời?
+
+CÂU HỎI: {question}
+
+CÁC BẢNG CÓ SẴN:
+{listing}
+
+Nhiệm vụ: chọn NHỮNG bảng thực sự cần thiết (thường 2-6 bảng). Chỉ chọn bảng chứa
+dữ liệu câu hỏi yêu cầu — KHÔNG chọn bảng thừa. Trả kết quả là JSON array các
+tên biến, ví dụ: ["df4", "df6", "df8"]. Chỉ trả JSON, không giải thích."""
+
+    messages = [
+        {"role": "system", "content": "Bạn là chuyên gia tài chính, trả JSON chính xác."},
+        {"role": "user", "content": prompt},
+    ]
+    raw = llm.generate_raw(messages)
+    if not raw:
+        return None
+    try:
+        import json as _json
+        # Lấy array JSON đầu tiên trong response
+        m = re.search(r"\[.*?\]", raw, re.DOTALL)
+        if not m:
+            return None
+        arr = _json.loads(m.group(0))
+        kept = {str(x).strip() for x in arr if str(x).strip().startswith("df")}
+        return kept if kept else None
+    except Exception:
+        return None
+
+
+def _compact_multi_company(
+    entities: Entities,
+    cards: list[dict[str, Any]],
+    usable: list[SearchResult],
+    evidence: dict[str, str],
+    evidence_plan: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[SearchResult], dict[str, str], list[dict[str, Any]]]:
+    """Nén evidence cho câu multi-company: giữ tối đa balance_sheet + income/cash_flow
+    merged của mỗi ticker (ưu tiên consolidated), bỏ table_N fragment rác.
+
+    Giữ nguyên thứ tự gốc. Trả evidence đã lọc.
+    """
+    # Statement nào cần? balance_sheet + income luôn; thêm cash_flow nếu hint.
+    stmts = {"balance_sheet", "income"}
+    if entities.statement and entities.statement not in stmts:
+        stmts.add(entities.statement)
+    report_types = [entities.report_type] if entities.report_type else ["consolidated", "separate"]
+
+    # Map ticker → (report_id, statement, kind) đang có trong evidence_plan
+    want: set[tuple[str, str, str]] = set()
+    for t in entities.tickers:
+        for rt in report_types:
+            for s in stmts:
+                want.add((t, rt, s))
+
+    new_cards: list[dict[str, Any]] = []
+    new_usable: list[SearchResult] = []
+    new_evidence: dict[str, str] = {}
+    new_plan: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for card, r, ep, (ekey, epath) in zip(cards, usable, evidence_plan, list(evidence.items())):
+        rid = ep["report_id"]
+        stmt = ep.get("name", "")
+        kind = ep.get("kind", "table")
+        ticker = None
+        rt = None
+        for t in entities.tickers:
+            if rid.startswith(t + "_"):
+                ticker = t
+                # parse report_type từ rid
+                parts = rid.split("_")
+                if "consolidated" in parts:
+                    rt = "consolidated"
+                elif "separate" in parts:
+                    rt = "separate"
+                break
+        if ticker is None:
+            continue  # bảng không thuộc ticker nào trong câu hỏi → bỏ
+        if kind == "table":
+            continue  # table_N fragment → bỏ (merged statement đã đủ dữ liệu)
+        if stmt not in stmts:
+            continue
+        if (ticker, rt, stmt) not in want:
+            continue
+        # Dedupe: mỗi (ticker, report_type, statement) giữ 1 bản (bản đầu tiên)
+        dkey = (ticker, rt, stmt)
+        if dkey in seen:
+            continue
+        seen.add(dkey)
+        new_cards.append(card)
+        new_usable.append(r)
+        new_plan.append(ep)
+        new_evidence[ekey] = epath
+    # Nếu lọc quá mạnh (0 bảng — không nên xảy ra vì gap-fill đảm bảo), trả nguyên.
+    if not new_cards:
+        return cards, usable, evidence, evidence_plan
+    return new_cards, new_usable, new_evidence, new_plan
+
+
+def _filter_evidence_by_vars(
+    kept: set[str],
+    cards: list[dict[str, Any]],
+    usable: list[SearchResult],
+    evidence: dict[str, str],
+    evidence_plan: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[SearchResult], dict[str, str], list[dict[str, Any]]]:
+    """Giữ lại chỉ các biến trong `kept` (df1, df3, ...)."""
+    new_cards: list[dict[str, Any]] = []
+    new_usable: list[SearchResult] = []
+    new_evidence: dict[str, str] = {}
+    new_plan: list[dict[str, Any]] = []
+    for card, r, ep, (ekey, epath) in zip(cards, usable, evidence_plan, list(evidence.items())):
+        if ep["variable"] in kept:
+            new_cards.append(card)
+            new_usable.append(r)
+            new_plan.append(ep)
+            new_evidence[ekey] = epath
+    return new_cards, new_usable, new_evidence, new_plan
+
+
 def solve(
     question: str,
     qid: int,
@@ -398,8 +644,14 @@ def solve(
     llm: LLMClient,
     cfg,
     max_retries: int = 1,
+    codegen_llm: LLMClient | None = None,
 ) -> dict:
-    """Giải 1 câu → record. Fallback answer=0.0 nếu codegen/exec thất bại."""
+    """Giải 1 câu → record. Fallback answer=0.0 nếu codegen/exec thất bại.
+
+    llm         = head LLM (Qwen3.5-9B) — phân tích câu, repair.
+    codegen_llm = pandas expert (deepseek-coder 1.3B) — sinh query.
+                  Nếu None → fallback sang llm.
+    """
     derived_dir = cfg.resolved_derived_dir()
     root = ROOT
 
@@ -410,6 +662,11 @@ def solve(
     results = _label_recall(question, entities, results, derived_dir)
 
     usable, cards, evidence, evidence_plan = _plan_evidence(results, facts_index, derived_dir)
+
+    # Fill evidence gap cho multi-company: đảm bảo mỗi ticker có balance_sheet + income.
+    evidence, evidence_plan, cards, usable = _fill_evidence_gap(
+        entities, evidence, evidence_plan, cards, usable, derived_dir, facts_index
+    )
 
     # Short-circuit: không có bảng truy hồi → fallback 0.0 ngay, không gọi LLM (tiết
     # kiệm ~120s/câu vô ích — xem phân tích fail: 26/470 câu wallcap có evidence=0).
@@ -432,14 +689,25 @@ def solve(
             f"deterministic({det['tier']})", evidence_plan,
         )
 
+    # Chọn LLM sinh code: codegen_llm nếu có, else head llm.
+    query_llm = codegen_llm if codegen_llm is not None else llm
+
     # Pre-check (advisory): thêm hint vào prompt nếu evidence thiếu statement câu hỏi cần.
     # KHÔNG hard-block (đã thấy 487/1012 câu LLM trả lời được bị block nhầm).
     pre_hint = _precheck_hint(entities, cards, usable, derived_dir)
 
+    # Multi-company: nén evidence — chỉ giữ balance_sheet + income merged mỗi ticker
+    # (bỏ table_N rác) → prompt ngắn, 1 call codegen. KHÔNG cần stage-1 LLM chọn bảng.
+    if len(entities.tickers) >= 2 and len(cards) > 6:
+        cards, usable, evidence, evidence_plan = _compact_multi_company(
+            entities, cards, usable, evidence, evidence_plan
+        )
+        print(f"    [compact] {len(cards)} bảng → codegen", flush=True)
+
     messages = build_messages(question, entities, cards)
     if pre_hint:
         messages[-1]["content"] += f"\n\n⚠️ HINT: {pre_hint}"
-    pandas_query = llm.generate_query(messages)
+    pandas_query = query_llm.generate_query(messages)
 
     answer: float | None = None
     exec_error = ""
@@ -454,14 +722,14 @@ def solve(
         if bad is not None:
             exec_error = bad
             if attempt < max_retries:
-                pandas_query = _repair(llm, messages, pandas_query, exec_error)
+                pandas_query = _repair(query_llm, messages, pandas_query, exec_error)
             continue
         ok, err = check_code(pandas_query, cfg.sandbox.max_code_len, cfg.sandbox.max_ast_nodes)
         if not ok:
             exec_error = f"ast_check: {err}"
             # Thử sửa qua LLM
             if attempt < max_retries:
-                pandas_query = _repair(llm, messages, pandas_query, exec_error)
+                pandas_query = _repair(query_llm, messages, pandas_query, exec_error)
             continue
         out = run_pandas(pandas_query, evidence, root, timeout=cfg.sandbox.timeout)
         if out.get("ok"):
@@ -469,7 +737,7 @@ def solve(
             break
         exec_error = out.get("error") or "exec thất bại"
         if attempt < max_retries:
-            pandas_query = _repair(llm, messages, pandas_query, exec_error)
+            pandas_query = _repair(query_llm, messages, pandas_query, exec_error)
 
     if answer is None:
         pandas_query = "result = 0.0"
