@@ -16,7 +16,7 @@ Kèm theo: kiến trúc dữ liệu (7 tầng), config, thư mục, và các quy
 │  OFFLINE (build 1 lần / khi có dữ liệu mới)                          │
 │                                                                     │
 │  OCR BCTC ──► ETL ──► Bảng sạch ──► Embed ──► Qdrant (vector DB)     │
-│  (txt thô)            (canonical)      (nemotron)                   │
+│  (txt thô)            (canonical)      (bge-m3 1024-d)              │
 └─────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -83,7 +83,7 @@ merged: facts → evidence_merged + statement_meta     (statement gộp)
 | `rebuild_evidence.py` | evidence (tidy mọi bảng) | ~13p |
 | `run_facts.py` | facts_all.csv | ~15p |
 | `run_merged_evidence.py` | evidence_merged + statement_meta | ~2p |
-| `build_retrieval_index.py` | embeddings + Qdrant | ~70p (free) |
+| `build_retrieval_index.py` | embeddings + Qdrant | ~70p (free) — thêm `--rebuild` khi đổi dim/model embed (drop collection + xoá retrieval_state.json) |
 
 ---
 
@@ -96,7 +96,7 @@ Câu hỏi
 extract_entities: ticker, year, report_type, unit, statement-hint
    │        (VJC, 2018, separate, triệu, None)
    ▼
-embed query: câu hỏi → vector 2048-dim (nemotron)
+embed query: câu hỏi → vector 1024-dim (bge-m3)
    │
    ▼
 Qdrant hybrid search:
@@ -164,7 +164,7 @@ T2 METADATA    catalog_tables.csv + layouts/{rid}.json (23 cột + layout JSON)
 T3 TIDY        evidence/{rid}__table_N.csv             [chi_tieu, Mãsố, ky, value]
 T4 FACTS       facts_all.csv                           (3 BCTC lõi, long-format VND)
 T5 MERGED      evidence_merged + statement_meta.csv    (statement gộp)
-T6 EMBED       embeddings/{ticker}.npy + .json         (cache vector 2048-dim)
+T6 EMBED       embeddings/{ticker}.npy + .json         (cache vector 1024-dim, bge-m3)
    + INDEX     Qdrant collection "bctc_tables"         (118,728 points)
 ```
 
@@ -194,7 +194,7 @@ src/vifinqa/
 │
 ├── retrieval/                  # ONLINE: câu hỏi → top-k bảng
 │   ├── entity.py               #   trích ticker/year/report_type/unit
-│   ├── index.py                #   chunk text + embed (nemotron) + upsert Qdrant
+│   ├── index.py                #   chunk text + embed (BGE-M3 1024-d qua bge_m3_server, fallback DeepInfra) + upsert Qdrant
 │   ├── search.py               #   hybrid dense+sparse → SearchResult
 │   ├── pipeline.py             #   orchestration: entity → search → bonus → top-k
 │   └── facts_index.py          #   truy vấn facts_all (verify + match)
@@ -211,8 +211,9 @@ src/vifinqa/
 ## 6. Config (2 file, merge sâu)
 
 ```
-configs/base.yaml   ← mặc định chung
-configs/api.yaml    ← override cho môi trường API (LLM + embed)
+configs/base.yaml           ← mặc định chung
+configs/api.yaml            ← override cho môi trường API (cloud-only CŨ: DeepInfra LLM + OpenRouter nemotron embed, không fallback) — giữ làm fallback profile
+configs/local_vllm.yaml    ← profile local-AI CHÍNH (vLLM + bge_m3_server + DeepInfra fallback); deep-merge base.yaml
 ```
 
 | Key | Giá trị | Ý nghĩa |
@@ -220,11 +221,26 @@ configs/api.yaml    ← override cho môi trường API (LLM + embed)
 | `retrieval.k` | 10 | top-k bảng trả evidence |
 | `retrieval.use_dense/use_sparse` | true/false | dense-only |
 | `retrieval.min_n_rows` | 5 | bỏ bảng junk/TOC khỏi index |
-| `retrieval.embedding.model` | `nvidia/nemotron-3-embed-1b:free` | model embed (free, dim 2048) |
-| `retrieval.embedding.max_chars` | 2000 | cắt chunk text |
+| `retrieval.embedding.model` | `BAAI/bge-m3` | model embed (local free, dim 1024); provider `ngrok` (bge_m3_server) + fallback `deepinfra` |
+| `retrieval.embedding.max_chars` | 4000 | cắt chunk text (kế thừa base) |
 | `retrieval.embedding.batch_size/workers` | 100/12 | tốc độ embed |
-| `llm.model_id` | `qwen/qwen3.5-9b` | LLM codegen |
+| `llm.model_id` | `qwen/qwen3.5-9b` | LLM codegen; provider `vllm` (local) + fallback `deepinfra` |
 | `sandbox.timeout` | 20 | giây chạy pandas_query |
+
+### 6.1. Serving & fallback (local-AI)
+
+**Serving — 1 GPU, 2 port (CHUNG 1 GPU, ~24GB lý tưởng):**
+- **Embed** `scripts/bge_m3_server.py` — BGE-M3 (`BAAI/bge-m3`), dense 1024-d, fp16, ~10-20% VRAM, port 8000. API: `POST /embed {texts,return_dense}` → `{dense:[[...]]}`, `POST /embed_bin` (bytes nhanh 5x), `GET /health`.
+- **LLM** `scripts/vllm_qwen_server.py` — `Qwen/Qwen3.5-9B` qua vLLM (OpenAI-compatible), `--gpu-memory-fraction 0.65` (60-70% VRAM), port 8001. Thinking (Qwen3 reasoning) **TẮT**: client gửi `chat_template_kwargs.enable_thinking=False` qua `extra_body`. API: `POST /v1/chat/completions`, `GET /health`.
+- **1 lệnh khởi động cả 2:** `python scripts/serve_all.py` — spawn bge TRƯỚC, poll `GET /health` tới ready (≈model load xong) rồi mới start vLLM (tránh tranh VRAM lúc load); in block YAML cho `configs/local_vllm.yaml`; Ctrl-C tắt sạch cả 2 process group (vLLM grandchild cũng chết, không leak GPU). Cờ chính: `--host --embed-port --llm-port --gpu-memory-fraction --llm-model --max-model-len --embed-batch-size --embed-max-length --embed-timeout --llm-timeout --no-llm --no-embed`. Còn ~15% VRAM headroom; GPU yếu/OOM → giảm `--gpu-memory-fraction` xuống 0.5 hoặc `--max-model-len`. (Vẫn có thể chạy 2 lệnh riêng: `bge_m3_server.py` rồi `vllm_qwen_server.py`.)
+
+**Fallback chain (local-first, sticky-first):**
+- Quy tắc: thử provider "sticky" (lần trước thành công) trước; lỗi transient (timeout/conn/429/5xx) → nhảy provider kế; cả chain fail → cooldown 30s rồi thử lại. Retry-in-provider nhỏ (1-2) rồi mới nhảy.
+- **LLM:** vLLM local (Qwen3.5-9B) → DeepInfra `Qwen/Qwen3.5-9B` (thinking off qua `extra_body {reasoning:{enabled:false}}`).
+- **Embed:** bge_m3_server local (provider `ngrok`/`http_bge`, HTTP `/embed`, không cần key/SDK) → DeepInfra `BAAI/bge-m3` (OpenAI-compatible embeddings, 1024-d).
+- **Dim guard:** mọi endpoint embed phải cùng `dense_dim=1024` với primary (Embedder assert lúc init) — tránh embed sai dim làm hỏng Qdrant index.
+
+> **Lưu ý đổi dim 2048 → 1024 (nemotron cũ → bge-m3):** BẮT BUỘC rebuild Qdrant + re-embed ~118K điểm: `python scripts/build_retrieval_index.py --config local_vllm.yaml --rebuild` (drop collection + xoá `retrieval_state.json`; cache `.npy` tự invalidate theo model+dim).
 
 ---
 
@@ -237,7 +253,7 @@ configs/api.yaml    ← override cho môi trường API (LLM + embed)
 | **Bảng làm đơn vị chunk** | 1 bảng = 1 vector → dễ truy hồi + relevant_tables chuẩn |
 | **Schema 4 cột `[chi_tieu, Mãsố, ky, value]`** | khớp grader BTC, query chạy ổn định |
 | **Deterministic trước LLM** | ~1/3 câu không cần LLM: nhanh, rẻ, chính xác |
-| **nemotron-3-embed-1b:free** | free + tiếng Việt tốt hơn bge-m3 (verify) |
+| **BGE-M3 (bge_m3_server local)** | 1024-d, local free, fallback DeepInfra; nemotron 2048 đã bỏ (revert) |
 | **dense-only (`use_sparse=False`)** | sparse TF gây nhiễu tiếng Việt |
 | **k=10** | bảng đúng hay rank 6-8; đánh đổi input LLM chấp nhận được |
 

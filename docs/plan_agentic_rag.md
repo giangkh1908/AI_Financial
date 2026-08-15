@@ -17,7 +17,7 @@ Cuộc thi ViFinQA: với mỗi câu hỏi tài chính tiếng Việt (1,012 câ
 - Câu hỏi: 472 câu 1 ticker, **364 câu không ticker** (chỉ tên công ty), 165 câu 3+ ticker; ticker viết thường; câu hard đa bước (ROE tại năm CFO/DT cao nhất giữa nhiều công ty); đơn vị triệu/trăm tỷ/nghìn tỷ đồng.
 
 **Quyết định đã chốt:**
-- LLM **Qwen3.5-9B-Instruct** (`Qwen/Qwen3.5-9B`; Apache 2.0, 9B ≤14B, phát hành 2/3/2026 < 1/6/2026 → hợp lệ; hybrid Gated DeltaNet + Gated Attention, 262K context, tool calling). Giai đoạn đầu dùng **API OpenRouter** — model ID `qwen/qwen3.5-9b` (đã xác minh có trên OpenRouter 4/8/2026, $0.10/$0.15 per 1M, 262K ctx), sau thuê GPU chạy local vLLM cùng model — client provider-agnostic.
+- LLM **Qwen3.5-9B-Instruct** (`Qwen/Qwen3.5-9B`; Apache 2.0, 9B ≤14B, phát hành 2/3/2026 < 1/6/2026 → hợp lệ; hybrid Gated DeltaNet + Gated Attention, 262K context, tool calling). Đã chuyển sang **local vLLM + bge_m3_server** chạy chung 1 GPU (xem `scripts/serve_all.py`), **DeepInfra** làm fallback provider cho cả LLM+embed (sticky-first, lỗi transient → nhảy provider kế). OpenRouter (profile cũ `api.yaml`) giờ chỉ còn profile cloud-only dự phòng. Client provider-agnostic, fallback chain nhiều provider.
 - Agent: **custom ReAct** (JSON action text-based), không LangGraph/LlamaIndex.
 - **BẮT BUỘC sandbox** chạy pandas_query (subprocess + hạn chế builtins/import + chặn network/file-write + timeout), dùng chung cho tool `run_pandas` và validator đóng gói.
 - Embedding BGE-M3 + reranker bge-reranker-v2-m3 (CPU local). 2 tầng evidence: facts long-format + wide raw.
@@ -60,8 +60,10 @@ D:\GURU\
 │                                       # httpx, openai, pydantic, pydantic-settings, pyyaml, tqdm, pytest
 ├── configs/
 │   ├── base.yaml       # paths, retrieval{k=10, rerank_depth=100}, sandbox{timeout=20}, tolerance=0.01
-│   ├── api.yaml        # provider=openrouter, base_url=https://openrouter.ai/api/v1, model=qwen/qwen3.5-9b
-│   └── local_vllm.yaml # provider=vllm, base_url=http://localhost:8000/v1
+│   ├── api.yaml        # profile cloud-only CŨ (deepinfra LLM + openrouter nemotron embed, không fallback) — GIỮ lại làm fallback profile, KHÔNG còn default
+│   └── local_vllm.yaml # config CHÍNH local-AI (deep-merge base.yaml): vLLM Qwen3.5-9B port 8001 (provider vllm) +
+│                       # bge_m3_server port 8000 (embed provider 'ngrok'/'http_bge'), 2 fallback DeepInfra
+│                       # (LLM Qwen3.5-9B + embed BAAI/bge-m3), dense_dim=1024. Kế thừa tuning base (k=10, max_chars=4000).
 ├── src/vifinqa/
 │   ├── config.py  constants.py  loader.py
 │   ├── etl/       parser.py  numbers.py  statements.py  facts_builder.py  catalog_builder.py  run.py
@@ -71,6 +73,7 @@ D:\GURU\
 │   ├── submission/ builder.py  validate.py  pack.py
 │   └── eval/      devset.py  metrics.py  runner.py
 ├── scripts/      run_etl.py  build_retrieval_index.py  run_batch.py  label_dev.py  validate_submission.py
+│                 serve_all.py  vllm_qwen_server.py  bge_m3_server.py
 ├── tests/        test_numbers.py  test_parser.py  test_statements.py  test_sandbox.py
 │                 test_entity.py  test_submission_roundtrip.py
 └── data/derived/ + data/out/   # gitignored (nằm trong data/)
@@ -119,13 +122,13 @@ Grid giữ nguyên chuỗi OCR (header multi-row nối dọc theo cột), **KHÔ
 ### M0 — Scaffolding & nền tảng (0.5 ngày)
 **Task:**
 1. Tạo venv + `requirements.txt` (đúng danh sách deps ở §2) + `pyproject.toml` (src layout, pytest).
-2. `configs/base.yaml`, `api.yaml`, `local_vllm.yaml`.
+2. `configs/base.yaml`, `api.yaml`, `local_vllm.yaml`. ✅ **Đã xong** — `local_vllm.yaml` (deep-merge `base.yaml`) override llm/codegen_llm/retrieval.embedding sang local vLLM+bge_m3_server + 2 fallback DeepInfra (LLM Qwen3.5-9B → DeepInfra Qwen/Qwen3.5-9B thinking off; embed bge-m3 local → DeepInfra BAAI/bge-m3 OpenAI-compatible, 1024-d). Fallback chain sticky-first: thử provider thành công lần trước trước, lỗi transient (timeout/conn/429/5xx) → nhảy provider kế, cả chain fail → cooldown 30s rồi thử lại.
 3. `src/vifinqa/constants.py`: `UNIT_FACTORS={"nghìn":1e3,"triệu":1e6,"tỷ":1e9,"đồng":1,"VND":1}`, `ANSWER_ABS_TOL=0.01`, `STEP_BUDGET=10`, `SANDBOX_TIMEOUT=20`, `MAX_CODE_LEN=4000`, `MAX_AST_NODES=300`, `K=10`, `RERANK_DEPTH=100`.
 4. `src/vifinqa/config.py`: `Config`, `LLMConfig(provider, base_url, api_key, model_id)` — provider-agnostic.
 5. `src/vifinqa/loader.py`: `load_stocks() -> dict[ticker, name]`, `load_questions() -> list[dict]`, `iter_reports() -> list[ReportMeta(report_id,ticker,year,report_type,path)]`.
 6. Smoke test: in 3 câu hỏi + 1 report path + đếm sơ bộ.
 
-**DoD:** `pytest tests/` chạy được (skeleton); smoke in đúng 3 câu, 1 path report, số bảng sơ bộ; model Qwen3.5-9B gọi thử qua API 1 lần thành công (xác minh provider có serve model này — nếu chưa có, báo user để chọn provider khác hoặc fallback Qwen3-8B).
+**DoD:** `pytest tests/` chạy được (skeleton); smoke in đúng 3 câu, 1 path report, số bảng sơ bộ; model Qwen3.5-9B gọi thử qua API 1 lần thành công (xác minh provider có serve model này — nếu chưa có, báo user để chọn provider khác). Fallback ở đây là **PROVIDER fallback** (vLLM local → DeepInfra cùng Qwen3.5-9B), KHÔNG phải model fallback; model fallback (đổi sang Qwen3-8B/14B) vẫn là rủi ro tương lai (xem R5).
 
 ### M1 — ETL: parser + numbers + wide tables + catalog (2–3 ngày)
 
@@ -188,12 +191,12 @@ Grid giữ nguyên chuỗi OCR (header multi-row nối dọc theo cột), **KHÔ
 - `retrieval/bm25.py` (rank_bm25), `dense.py` (BGE-M3 + FAISS), `rrf.py` (k=60), `rerank.py` (bge-reranker-v2-m3 top-100 → top-10).
 - `retrieval/facts_index.py`: index `facts_all.parquet`; `get_facts(ticker, years, statement, item) -> DataFrame`.
 - `retrieval/pipeline.py`: `search(question, top_k=10) -> SearchResult{report_id, table_id, page_no, unit, snippet}`.
-- `scripts/build_retrieval_index.py` chạy offline.
+- `scripts/build_retrieval_index.py` chạy offline. Đổi dense_dim (2048 nemotron cũ → 1024 bge-m3) ⇒ **BẮT BUỘC** `python scripts/build_retrieval_index.py --config local_vllm.yaml --rebuild` (drop Qdrant collection + xoá `retrieval_state.json`; cache `.npy` tự invalidate theo model+dim nên không cần xoá tay).
 
 **DoD:** entity filter đúng 100% câu có ticker (dev set); trên 40 câu dev: recall@10 ≥ 0.8 (ước lượng, tune sau ở M7).
 
 ### M4 — Sandbox chạy pandas (0.5–1 ngày) — ✅ XONG (5/8/2026)
-**Đã triển khai (gộp M4+M5simple+M6 pragmatic để ra submission.zip):** `sandbox/{ast_check,runner,executor}.py` (AST safety, `python -I` runner inject `vn_num` inline + safe builtins, `run_pandas` subprocess+timeout), `codegen/{prompt,llm}.py` (system data contract + few-shot; `LLMClient` Qwen3.5-9B `thinking=False` qua `extra_body={"reasoning":{"enabled":False}}` — fix overflow reasoning; strip import + strip `def vn_num`), `agent/loop.py` (`solve`: retrieve→codegen→retry≤2→fallback), `submission/{builder,validate,pack}.py` (materialize evidence, re-exec validate 100%, ZIP root), `scripts/{run_codegen,build_submission}.py`. Smoke 5: validate 1012/1012, `submission.zip` đúng schema. **105 test pass.** ⚠️ Khoảng trống retrieval: `embed_statement_only=true` bỏ notes tables → nhiều câu answer 0 → cần re-index full 146K trước khi chạy full 1012 (xem CLAUDE.md §8 M4).
+**Đã triển khai (gộp M4+M5simple+M6 pragmatic để ra submission.zip):** `sandbox/{ast_check,runner,executor}.py` (AST safety, `python -I` runner inject `vn_num` inline + safe builtins, `run_pandas` subprocess+timeout), `codegen/{prompt,llm}.py` (system data contract + few-shot; `LLMClient` Qwen3.5-9B `thinking=False` qua `extra_body={"reasoning":{"enabled":False}}` — fix overflow reasoning; strip import + strip `def vn_num`), `agent/loop.py` (`solve`: retrieve→codegen→retry≤2→fallback), `submission/{builder,validate,pack}.py` (materialize evidence, re-exec validate 100%, ZIP root), `scripts/{run_codegen,build_submission}.py`. Smoke 5: validate 1012/1012, `submission.zip` đúng schema. **105 test pass.** `LLMClient` giờ là **multi-provider chain** (sticky-first + DeepInfra fallback) trong `codegen/llm.py` (`_order`/`_try_provider`/`_call_chain`), không phải single-provider. ⚠️ Khoảng trống retrieval: `embed_statement_only=true` bỏ notes tables → nhiều câu answer 0 → cần re-index full 146K trước khi chạy full 1012 (xem CLAUDE.md §8 M4).
 **Task & chữ ký hàm (gốc):**
 - `sandbox/ast_check.py`: `check_code(code) -> (ok, error)` — AST walk: block `Import/ImportFrom`; block call `{open,eval,exec,compile,input,globals,locals,vars,breakpoint,__import__,getattr,setattr,delattr}`; block attribute `{__class__,...}`; block tên module `{os,sys,subprocess,socket,urllib,ctypes,tempfile,shutil,pathlib,io}`; limit node ≤300, len ≤4000.
 - `sandbox/paths.py`: `resolve_evidence_path(csv_path, root) -> Path` — `realpath` nằm trong root + bắt đầu `data/`.
@@ -251,7 +254,7 @@ Grid giữ nguyên chuỗi OCR (header multi-row nối dọc theo cột), **KHÔ
 - **R2 — OCR lỗi dấu/ký tự**: `normalize_label` diacritic-insensitive; ưu tiên `item_code`, fallback label synonym; cross-sum validate ghi log để đo chất lượng facts.
 - **R3 — Báo cáo thiếu năm được hỏi**: entity filter không hard-fail; trả facts trống + agent xử lý.
 - **R4 — Câu hard đa bước vượt step budget**: few-shot dạy "giải facts_all trước, filter sau"; fail → fallback không crash (ưu tiên Execution Accuracy).
-- **R5 — API/provider**: cần xác minh provider API có serve **Qwen3.5-9B** (kiến trúc linear-attention mới) + vLLM hỗ trợ inference trước khi thuê GPU; dự phòng Qwen3-8B/14B (4/2025) — đổi 1 dòng config. Ghi nguồn lấy model trong paper.
+- **R5 — API/provider**: đã xác minh **Qwen3.5-9B** chạy được trên local vLLM (`scripts/vllm_qwen_server.py`, port 8001) + DeepInfra serve cùng model — **provider fallback (vLLM → DeepInfra) ĐÃ implement** trong `codegen/llm.py` (sticky-first, lỗi transient → nhảy provider, cooldown 30s cả chain fail). Còn lại rủi ro **model fallback** (đổi sang Qwen3-8B/14B 4/2025 khi model chính mất/không serve) — chưa implement, đổi 1 dòng config khi cần. Ghi nguồn lấy model trong paper.
 - **R6 — Tolerance đáp án chưa rõ**: giả định abs 0.01 (paper); mọi câu re-exec kiểm tra answer trên CSV thật.
 
 ---

@@ -51,7 +51,7 @@ wide CSV  tables/{rid}/table_N.csv        ← CANONICAL (1 bản, không nhân �
 - **1 bảng = 1 chunk** (118,728 bảng = 118,728 points).
 - Chunk text = `prefix + header_text + row_labels + anchor_context + fact_labels` (nối `\n`, cắt `max_chars=2000`).
 - **`row_labels` chỉ 10 dòng đầu** cột label_col ⚠️ → Vấn đề #1 (bảng dài bỏ sót chỉ tiêu cuối).
-- **Model: `nvidia/nemotron-3-embed-1b:free`** (OpenRouter, free, **dim 2048**) — thay bge-m3 (1024) sau verify tốt hơn tiếng Việt. Lịch sử: bge-m3 → GPU thuê RTX 3060 (OOM) → nemotron free.
+- **Model: `nvidia/nemotron-3-embed-1b:free`** (OpenRouter, free, **dim 2048**) — thay bge-m3 (1024) sau verify tốt hơn tiếng Việt. Lịch sử: bge-m3 → GPU thuê RTX 3060 (OOM) → nemotron free. (→ đã thay: quay lại bge-m3 1024-d local + DeepInfra fallback, xem §0.1.7)
 - **`use_dense=True, use_sparse=False`** (dense-only — sparse TF gây nhiễu tiếng Việt).
 - **`k=10`** (5→10 vì bảng đúng hay rank 6-8).
 - Cache embed: `embeddings/{ticker}.npy` + hash md5 text chunks → resume không embed lại.
@@ -76,6 +76,33 @@ wide CSV  tables/{rid}/table_N.csv        ← CANONICAL (1 bản, không nhân �
 | Quy mô | bảng statement >10 dòng (6,662/10,808) | **25,474 bảng không period_cols** (1,545 bảng %/tỷ lệ) |
 
 **Hướng fix ưu tiên:** (1) tidy bảng không-kỳ (fix Q19-class, rebuild evidence ~13p); (2) lexical fallback index từ evidence (fix Q7-class, không rebuild index); (3) anchor noise filter (rebuild index ~70p); (4) deterministic mở rộng fuzzy (difflib stdlib, không thêm rapidfuzz).
+
+### 0.1.7. Local-AI + fallback (15/8/2026) — CURRENT
+
+> ⚠️ Phần này là trạng thái MỚI NHẤT về serving/embed/LLM. Các mục cũ bên dưới (§0.1.3, §5, §6…) vẫn dùng nemotron-2048/OpenRouter — đã bị phần này thay.
+
+**Serving local (GPU thuê ≥16GB, lý tưởng 24GB, CHUNG 1 GPU 2 port):**
+- **Embed:** `scripts/bge_m3_server.py` — BGE-M3 (`BAAI/bge-m3`), dense **1024-d**, fp16, ~10-20% VRAM, **port 8000**. API: `POST /embed {texts,return_dense}` → `{dense: [[...]]}`, `POST /embed_bin` (bytes nhanh 5x), `GET /health`.
+- **LLM:** `scripts/vllm_qwen_server.py` — `Qwen/Qwen3.5-9B` qua vLLM (OpenAI-compatible), `--gpu-memory-fraction 0.65` (60-70% VRAM), **port 8001**. Thinking (Qwen3 reasoning) **TẮT**: server không thêm `--enable-reasoning`; client gửi `chat_template_kwargs.enable_thinking=False` qua `extra_body`. API: `POST /v1/chat/completions`, `GET /health`.
+- **1 lệnh khởi động cả 2:** `python scripts/serve_all.py` — spawn bge **TRƯỚC**, poll `GET /health` tới ready (≈model load xong) rồi mới start vLLM (tránh tranh VRAM lúc load), in block YAML cho `configs/local_vllm.yaml`, Ctrl-C tắt sạch cả 2 process group (vLLM grandchild cũng chết, không leak GPU). Cờ: `--host --embed-port --llm-port --gpu-memory-fraction --llm-model --max-model-len --embed-batch-size --embed-max-length --embed-timeout --llm-timeout --no-llm --no-embed`. Còn ~15% VRAM headroom; GPU yếu/OOM → giảm `--gpu-memory-fraction` xuống 0.5 hoặc `--max-model-len`. Có thể vẫn chạy 2 lệnh riêng: `bge_m3_server.py` rồi `vllm_qwen_server.py` (`serve_all.py` chỉ gói 2 cái đó).
+
+**Fallback chain (local-first, sticky-first):**
+- Quy tắc: thử provider "sticky" (lần trước thành công) trước; lỗi transient (timeout/conn/429/5xx) → nhảy provider kế; cả chain fail → cooldown 30s rồi thử lại. Retry-in-provider nhỏ (1-2) rồi mới nhảy.
+- **LLM:** vLLM local (Qwen3.5-9B) → DeepInfra `Qwen/Qwen3.5-9B` (thinking off qua `extra_body {reasoning:{enabled:false}}`).
+- **Embed:** `bge_m3_server` local (provider `ngrok`/`http_bge`, HTTP `/embed`, KHÔNG cần key/SDK) → DeepInfra `BAAI/bge-m3` (OpenAI-compatible embeddings API, 1024-d).
+- **Dim guard:** mọi endpoint embed phải cùng `dense_dim=1024` với primary (Embedder assert lúc init) — tránh embed sai dim làm hỏng Qdrant index.
+
+**Config:** `configs/local_vllm.yaml` (deep-merge `configs/base.yaml`) — chỉ override `llm`/`codegen_llm`/`retrieval.embedding` (provider + fallbacks); kế thừa tuning base (k=10, max_chars=4000, use_sparse=false, rerank.enabled=false). DeepInfra `api_key` rỗng → tự resolve env `DEEPINFRA_TOKEN`. vLLM `api_key` default `vllm` (hoặc env `VLLM_API_KEY`). `configs/api.yaml` (profile cloud-only CŨ: deepinfra LLM + openrouter nemotron embed, không fallback) — GIỮ lại làm fallback profile, KHÔNG còn là default; `local_vllm.yaml` mới là config chính cho local-AI.
+
+**Config schema (`src/vifinqa/config.py`):** thêm `ProviderRef` (LLM fallback) + `EmbedProviderRef` (embed fallback), `extra='forbid'`, `_env_api_key` resolve theo provider; `LLMConfig.fallbacks` + `EmbeddingConfig.fallbacks`.
+
+**Đổi `dense_dim` 2048 → 1024** (nemotron cũ → bge-m3) ⇒ BẮT BUỘC rebuild Qdrant collection + re-embed ~118K điểm: `python scripts/build_retrieval_index.py --config local_vllm.yaml --rebuild` (drop collection + xoá `retrieval_state.json`; cache `.npy` tự invalidate theo model+dim nên không cần xoá tay).
+
+**Code đã đổi:** `config.py` (`ProviderRef`/`EmbedProviderRef`/`fallbacks`/`_env_api_key`), `codegen/llm.py` (`LLMClient` multi-provider chain `_order`/`_try_provider`/`_call_chain`), `retrieval/index.py` (`Embedder` + `make_embedder`, thay `_new_embed_client` vốn hardcode OpenRouter), `retrieval/pipeline.py` + `scripts/build_retrieval_index.py` (gọi `make_embedder`, `--rebuild`), `scripts/vllm_qwen_server.py` (MỚI), `scripts/serve_all.py` (MỚI), `configs/local_vllm.yaml` (MỚI).
+
+**LlamaIndex:** ĐÃ BỎ — chỉ ~20% pipeline thay được (commodity layer); `QdrantVectorStore` mất native RRF; không có primitive cho entity-extract/deterministic/label-recall; sandbox grader-parity hiện tại hơn mọi lựa chọn code-exec.
+
+Quyết định trước đây chốt nemotron-2048/OpenRouter (§0.1.3/§0.1.5/§5/§6 bên dưới) ĐÃ BỊ THAY bởi local-AI+DeepInfra-fallback này.
 
 ## 1. Tổng quan cuộc thi & mục tiêu
 
@@ -183,7 +210,7 @@ OCR .txt → loader.ReportMeta
 question → RetrievalPipeline.search:
   1. extract_entities (entity.py): tickers (4-stage), years, report_type, statement hint (soft), unit factor
   2. build_payload_filter (search.py): Qdrant Filter must ticker/year/report_type
-  3. embed_query: dense OpenRouter **nemotron-3-embed-1b:free 2048-d** (cache .npy per ticker); sparse tf_sparse
+  3. embed_query: dense OpenRouter **nemotron-3-embed-1b:free 2048-d** (cache .npy per ticker); sparse tf_sparse (→ đã thay: bge-m3 1024-d local/DeepInfra, xem §0.1.7)
   4. hybrid_search: native Qdrant prefetch [dense, sparse] + FusionQuery(RRF) — nhưng **use_sparse=False (dense-only)**
   5. apply_statement_bonus: soft add if table.statement==hint, re-sort
   6. **fallback (MỚI 8/8)**: filter report_type quá hẹp (báo cáo 'other' không tách cons/sep — EVF/FTS) → bỏ filter type tìm lại
@@ -231,8 +258,8 @@ results.jsonl → builder.build:
 - `documents.csv` — **1,965 rows, 7 cols**.
 - `evidence/` — **146,246 tidy CSV** (rebuilt 8/8, schema `[chi_tieu, Mãsố, ky, value]`) — mọi bảng kể cả notes.
 - `evidence_merged/` — **5,474 statement gộp**. `statement_meta.csv` — 5,474 dòng.
-- `embeddings/{TICKER}.npy`+`.json` — 100 tickers, dense **nemotron 2048-d**, cache key hash(texts)+n+model+dim.
-- `qdrant/` — Docker Qdrant. Collection `bctc_tables`: **118,728 points, 2048-dim** (re-index 8/8, nemotron free, ~$0.27 cho bge-m3 trước). ⚠️ Mismatch 118,728 vs 146,246 — 27,518 bảng bị filter (min_n_rows=5/empty/n_rows==0).
+- `embeddings/{TICKER}.npy`+`.json` — 100 tickers, dense **nemotron 2048-d**, cache key hash(texts)+n+model+dim. (→ đã thay: bge-m3 1024-d, xem §0.1.7)
+- `qdrant/` — Docker Qdrant. Collection `bctc_tables`: **118,728 points, 2048-dim** (re-index 8/8, nemotron free, ~$0.27 cho bge-m3 trước). ⚠️ Mismatch 118,728 vs 146,246 — 27,518 bảng bị filter (min_n_rows=5/empty/n_rows==0). (→ đã thay: dim 1024, cần `--rebuild`, xem §0.1.7)
 - State: `etl_state.json` (100 tickers), `facts_state.json` (100), `retrieval_state.json` (100, nemotron build 8/8).
 
 ### `data/out/` (codegen/results/submission)
@@ -263,11 +290,11 @@ results.jsonl → builder.build:
 - `paths`: data/data/data-out.
 - `retrieval`: **k=10** (5→10, 9/8 — bảng đúng hay rank 6-8), rerank_depth=30, engine=qdrant, **use_dense=true, use_sparse=false** (9/8 — dense-only, sparse TF gây nhiễu tiếng Việt), fusion=native, statement_bonus, embedding max_chars=4000 (base; **api.yaml override 2000**), **workers=4** (base; **api.yaml override 12**), embed_statement_only=false, min_n_rows=5, rerank.enabled=false.
 - `sandbox`: timeout=20, max_code_len=8000, max_ast_nodes=800.
-- `llm`: openrouter, model_id=qwen/qwen3.5-9b, temperature=0.0, max_tokens=4096, timeout=60.0, retries=3 (defaults; api.yaml override).
+- `llm`: openrouter, model_id=qwen/qwen3.5-9b, temperature=0.0, max_tokens=4096, timeout=60.0, retries=3 (defaults; api.yaml override). (→ đã thay: local_vllm.yaml = vLLM local + DeepInfra fallback, xem §0.1.7)
 
 ### `configs/api.yaml` (override, default cho mọi run — CẬP NHẬT 9/8)
 - `llm`: max_tokens=4096, **timeout=30.0, retries=1**, extra_headers `HTTP-Referer`, `X-Title`.
-- `retrieval.embedding` (MỚI 9/8): **provider=openrouter, model=`nvidia/nemotron-3-embed-1b:free`, dense_dim=2048, max_chars=2000, batch_size=100, workers=12, cache_dir=data/derived/embeddings**.
+- `retrieval.embedding` (MỚI 9/8): **provider=openrouter, model=`nvidia/nemotron-3-embed-1b:free`, dense_dim=2048, max_chars=2000, batch_size=100, workers=12, cache_dir=data/derived/embeddings**. (→ đã thay: local_vllm.yaml = bge_m3_server local + DeepInfra fallback, dense_dim=1024, xem §0.1.7)
 
 ### Knobs quan trọng (runtime)
 | Knob | Value | Ý nghĩa |
@@ -288,7 +315,7 @@ results.jsonl → builder.build:
 | `retrieval.rerank.enabled` | false | Qwen3-Reranker tắt |
 | `WALL_CAP` (run_codegen) | 120s | `cfg.sandbox.timeout * 6.0` per-question wall guard (session fix, CHƯA test kỹ — quá aggressive cho hard tail) |
 
-**Model:** LLM `qwen/qwen3.5-9b` via OpenRouter. **Embeddings `nvidia/nemotron-3-embed-1b:free` 2048-d via OpenRouter (9/8)** — thay `baai/bge-m3` 1024-d. Qdrant Docker v1.19.0 port 6333/6334. Chưa có GPU local — rerank local bỏ.
+**Model:** LLM `qwen/qwen3.5-9b` via OpenRouter. **Embeddings `nvidia/nemotron-3-embed-1b:free` 2048-d via OpenRouter (9/8)** — thay `baai/bge-m3` 1024-d. Qdrant Docker v1.19.0 port 6333/6334. Chưa có GPU local — rerank local bỏ. (→ đã thay toàn bộ: vLLM local LLM + bge_m3_server 1024-d embed + DeepInfra fallback chain; api.yaml chỉ còn fallback profile; xem §0.1.7)
 
 ## 6. Trạng thái hiện tại (milestones)
 
@@ -311,7 +338,7 @@ results.jsonl → builder.build:
 - `tidy.grid_to_tidy` dùng layout (label_col/code_col/period_cols/unit_factor) — không đoán cột.
 - **Rebuild toàn bộ 8/8**: wide (736s) + evidence 146,246 (786s) + facts 400,510 (889s) + merged 5,474 (151s) + index.
 
-**Embed model (9/8):** chốt **`nvidia/nemotron-3-embed-1b:free`** (OpenRouter, free, **dim 2048**). Lịch sử: bge-m3 → GPU thuê RTX 3060 (OOM 12GB, mạng chậm) → nemotron free (tốt hơn bge-m3 trong verify tiếng Việt). Fix: `encoding_format="float"` (nemotron không hỗ trợ base64). Index rebuild 9/8: 118,728 points, ~70 phút, free.
+**Embed model (9/8):** chốt **`nvidia/nemotron-3-embed-1b:free`** (OpenRouter, free, **dim 2048**). Lịch sử: bge-m3 → GPU thuê RTX 3060 (OOM 12GB, mạng chậm) → nemotron free (tốt hơn bge-m3 trong verify tiếng Việt). Fix: `encoding_format="float"` (nemotron không hỗ trợ base64). Index rebuild 9/8: 118,728 points, ~70 phút, free. (→ đã thay 15/8: quay lại bge-m3 1024-d local (bge_m3_server) + DeepInfra fallback, lý do OOM cũ không còn áp dụng khi serve riêng port 8000; rebuild bắt buộc vì đổi dim; xem §0.1.7)
 
 **Qdrant fix 9/8:** payload index tường minh (year/ticker/report_type/statement) — filter AND (ticker+year) trả 0 khi không có index.
 
@@ -478,7 +505,7 @@ D. **Smoke test** (`scripts/smoke_fmt_100.py`, NEW — **chưa chạy**, user in
 
 1. **Grader BTC inject BARE VARIABLES (df1, df2, ...)** — KHÔNG PHẢI `dfs` dict keyed theo table_ref. Bằng chứng: EXEC_ACC tăng từ 0 → 0.004 khi đổi sang bare variables. Companion repo `DSKT-NOWJ/ViFinQA` dùng `dfs` dict nhưng đó là code nội bộ tác giả, KHÔNG phải grader BTC leaderboard.
 
-2. **Gold standard chỉ có 506 câu** — BTC chỉ evaluate trên 506 câu (warning: "gold=506 pred=1012"). HF dataset có 1012 câu nhưng chỉ là public test set. 506 câu thừa bị điểm 0, kéo trung bình xuống thê thảm (DOCS_F2 giảm 0.77 → 0.0847 khi nộp 1012 câu với 912 fallback).
+2. **✅ BTC XÁC NHẬN (9/8): PHẢI NỘP ĐỦ 1012 CÂU** — mọi ghi chú cũ "gold=506, nộp subset" là SAI. Warning "gold=506 pred=1012" KHÔNG có nghĩa là chỉ cần nộp 506 — BTC yêu cầu đủ 1012 question. Nguyên nhân điểm thấp lần nộp 100 câu (DOCS_F2 0.7486 → 0.08) là do **912 câu fallback 0.0 kéo trung bình xuống**, KHÔNG phải vì nộp thừa. → Phải chạy đủ 1012 câu, tối thiểu hoá fallback.
 
 3. **relevant_tables line format có match MỘT PHẦN** — TABLES_F2 tăng 0 → 0.0166 → 0.0668 qua các lần nộp với line format. Nhưng vẫn thấp, có thể do: (a) BTC dùng corpus nội bộ `ocr_filter/` khác với HF, (b) cách đếm line khác, (c) retrieval chưa chính xác.
 
@@ -486,9 +513,8 @@ D. **Smoke test** (`scripts/smoke_fmt_100.py`, NEW — **chưa chạy**, user in
 
 ### Việc cần làm
 
-1. **Nộp subset chất lượng thay vì full 1012** — gold chỉ có 506 câu (warning "gold=506 pred=1012"), 1012 câu có 912 fallback kéo điểm xuống. Không biết list 506 câu gold → **tự chọn subset chiến lược**: ưu tiên câu có `answer != 0` + deterministic-OK + retrieval confidence cao; tránh nộp câu fallback 0.0 để khỏi bị tính điểm 0.
-2. **Chạy subset (506 hoặc ít hơn) với bare variables** — mục tiêu giữ tỉ lệ real high so với tổng nộp, tránh 506 câu thừa bị điểm 0 kéo trung bình.
-3. **Cải thiện retrieval** — TABLES_F2 vẫn thấp (0.0668). Tự tune retrieval (top-k, statement bonus, min_n_rows, entity filter) + đối chiếu `relevant_docs` đúng/sai để tách lỗi retrieval vs lỗi numbering.
+1. **Chạy đủ 1012 câu** (BTC xác nhận 9/8: phải nộp đủ 1012, KHÔNG subset) — tối thiểu hoá fallback 0.0 vì fallback kéo trung bình xuống.
+2. **Cải thiện retrieval** — TABLES_F2 vẫn thấp. Tự tune retrieval (top-k, statement bonus, min_n_rows, entity filter) + đối chiếu `relevant_docs` đúng/sai để tách lỗi retrieval vs lỗi numbering.
 
 ## 8b. Phiên 7/8/2026 — merged evidence tier + deterministic engine (không LLM)
 
@@ -529,12 +555,12 @@ D. **Smoke test** (`scripts/smoke_fmt_100.py`, NEW — **chưa chạy**, user in
 
 **⚠️ Trước tiên — các vấn đề retrieval đã phân tích (xem §0.1.6), fix theo thứ tự:**
 
-1. **Fix Vấn đề #5 (Lớp B): tidy bảng không có cột kỳ** (`tidy.py::grid_to_tidy`) — bảng %/tỷ lệ/danh sách (25,474 bảng không period_cols; 1,545 bảng %/tỷ lệ) hiện evidence rỗng → Q19 fail. Fix: nếu period_cols rỗng, chọn cột số chính (≥50% cell số, ưu tiên header `%|ty le|so huu|gia tri`), emit row `ky=str(report_year)`. Rebuild evidence ~13p, không cần rebuild index. **Ưu tiên #1.**
-2. **Fix Vấn đề #1 (Lớp A): lexical fallback index** — build inverted index từ `evidence/*.csv` (label chuẩn → rid|table_id), fuzzy match (difflib stdlib, không cần rapidfuzz), union bảng vào evidence bất kể top-k dense. Fix Q7-class (row_labels cắt 10 dòng). Không rebuild index.
-3. **Anchor noise filter** (`index.py::build_table_chunks`) — lọc dòng toàn hoa + không số, `TRANG|MỤC LỤC|KIỂM TOÁN`. ⚠️ Cần rebuild index ~70p.
-4. **Deterministic mở rộng** (`engine/deterministic.py`) — intent classifier (tăng/giảm/tỷ lệ/argmax) + `difflib.SequenceMatcher` thay token-overlap + alias dict.
-5. **Chạy codegen full 1012** (nemotron + k=10 + deterministic) → build submission → nộp.
-6. **Nộp subset chất lượng cao thay vì full 1012** — gold chỉ 506 câu; tránh fallback 0.0.
+1. **✅ ĐÃ XONG (9/8): Fix Vấn đề #5 (Lớp B)** — `format_classify.value_col` cho bảng không-cột-kỳ + `tidy.grid_to_tidy` emit ky=report_year. Rebuild layouts/catalog/evidence/label_index. Q19 (HHV table_1 5 rows), Q20 (GVR Visorutex 27.78) evidence OK.
+2. **✅ ĐÃ XONG (9/8): Fix Vấn đề #1 (Lớp A): lexical recall** — `retrieval/label_index.py` (inverted index chi_tieu → rid|table_id, 113,289 entry, pkl 44MB), `_label_recall` union bảng trong `solve()`. Q7 → merged BS có quỹ khen thưởng.
+3. **✅ ĐÃ XONG (9/8): verify full 1012 (no-LLM)** — coverage 100%, deterministic match 219/1012 (21.6%), lexical thêm bảng 98% câu. Codegen 100 câu: ok=98/100, deterministic 63.
+4. **Anchor noise filter** (`index.py::build_table_chunks`) — lọc dòng toàn hoa + không số, `TRANG|MỤC LỤC|KIỂM TOÁN`. ⚠️ Cần rebuild index ~70p.
+5. **Deterministic mở rộng** (`engine/deterministic.py`) — intent classifier (tăng/giảm/tỷ lệ/argmax) + `difflib.SequenceMatcher` thay token-overlap + alias dict.
+6. **Chạy codegen full 1012** (nemotron + lexical + fix #5) → build submission → nộp. **BTC xác nhận 9/8: PHẢI NỘP ĐỦ 1012 — không subset, tối thiểu hoá fallback.**
 7. **Phase-time `solve()` trên hard question** — đo search vs build_cards vs codegen (bottleneck còn chưa rõ).
 8. **M7 dev-set 40 câu + metrics.**
 9. **Điều tra mismatch 118,728 vs 146,246** (27,518 bảng filter min_n_rows/empty).

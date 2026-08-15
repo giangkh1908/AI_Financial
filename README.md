@@ -84,7 +84,7 @@ Báo cáo tài chính hợp nhất cho năm tài chính kết thúc ngày 31 th�
 | ① Entity | câu hỏi | `ticker=VJC, year=2018, report_type=separate, statement=None, unit_factor=1e6 (triệu)` |
 | ② Retrieve | câu hỏi → embed → Qdrant | top-k bảng, rank #1 = `VJC_financial_statements_2018_separate\|table_50` |
 | ③ Chunk | catalog dòng table_50 | `text_dense` 526 ký tự (xem mục 5) |
-| ④ Embed | text_dense → nemotron | vector 2048-dim, chuẩn hoá norm=1 |
+| ④ Embed | text_dense → BGE-M3 (bge_m3_server) | vector 1024-dim, chuẩn hoá norm=1 |
 | ⑤ Evidence | wide → tidy | `[lai tien gui, , 2018, 208253201298.0]` |
 | ⑥ Answer | deterministic match label | **208253.2 triệu đồng** |
 
@@ -226,7 +226,7 @@ AAA_2015_consolidated | income        | ["table_4"]
 
 ### Tầng 6 — `embeddings/` (cache embed per ticker)
 
-`{ticker}.npy` (float32 `[N, 2048]`) + `{ticker}.json` `{hash, n, model, dim}` — hash md5 của text chunks → **resume không embed lại** (cache-hit khi text không đổi).
+`{ticker}.npy` (float32 `[N, 1024]`) + `{ticker}.json` `{hash, n, model, dim}` — hash md5 của text chunks → **resume không embed lại** (cache-hit khi text không đổi). Cache key gồm `model`+`dim` → đổi embed model/dim (vd nemotron 2048 → bge-m3 1024) tự invalidate, không cần xoá tay (chạy `--rebuild` để drop collection + xoá checkpoint).
 
 ### `documents.csv`
 
@@ -314,37 +314,40 @@ NGÂN HÀNG THƯƠNG MẠI CỔ PHẦN Á CHÂU
 
 | | text_dense | text_lex |
 |---|---|---|
-| Dùng cho | **Dense embedding** (nemotron) | Sparse TF (**đang tắt** — `use_sparse=False`) |
-| Xử lý | giữ nguyên, cắt `max_chars=2000` | bỏ dấu + chỉ [a-z0-9], cắt 6000 |
+| Dùng cho | **Dense embedding** (BGE-M3, bge_m3_server local + DeepInfra fallback) | Sparse TF (**đang tắt** — `use_sparse=False`) |
+| Xử lý | giữ nguyên, cắt `max_chars=4000` | bỏ dấu + chỉ [a-z0-9], cắt 6000 |
 
-### 5.4. Embedding model (config `api.yaml`)
+### 5.4. Embedding model (config `local_vllm.yaml`)
 
 | Tham số | Giá trị hiện tại |
 |---|---|
-| provider | `openrouter` |
-| model | **`nvidia/nemotron-3-embed-1b:free`** (free, mở) |
-| dense_dim | **2048** (nemotron-3-embed-1b = 2048, khác bge-m3 1024) |
+| provider chính | `http_bge` (local `scripts/bge_m3_server.py`, BGE-M3, port 8000) |
+| fallback | DeepInfra `BAAI/bge-m3` (OpenAI-compatible embeddings API) |
+| model | **`BAAI/bge-m3`** (dense 1024-d, fp16) |
+| dense_dim | **1024** (bge-m3) |
 | max_chars | 2000 |
 | batch_size | 100 |
 | workers | 12 |
 
-**Ví dụ vector thật** (query Q1 "Lãi tiền gửi ... VJC ... triệu đồng", dim 2048, chuẩn hoá norm=1):
-```
-[0.1502, 0.0581, -0.0231, 0.0062, 0.0133, -0.0330, 0.0665, 0.0038, ...]   (2048 giá trị)
-```
-(Chỉ minh hoạ 8 giá trị đầu — vector thật là mảng 2048 số float32.)
+Provider chain **local-first, sticky-first**: thử provider "sticky" (lần trước thành công) trước; lỗi transient (timeout/conn/429/5xx) → nhảy provider kế; cả chain fail → cooldown 30s rồi thử lại. Embed: bge_m3_server local (HTTP `/embed`, không cần key/SDK) → DeepInfra BAAI/bge-m3 (1024-d). **Dim guard**: mọi endpoint embed phải cùng `dense_dim=1024` với primary (Embedder assert lúc init) — tránh embed sai dim làm hỏng Qdrant index.
 
-**Lịch sử lựa chọn model:** ban đầu dùng `baai/bge-m3` (OpenRouter trả phí) → thử GPU thuê RTX 3060 (OOM 12GB, network chậm) → **chốt nemotron-3-embed-1b:free** (free, nhanh, tiếng Việt tốt hơn bge-m3 trong verify).
+**Ví dụ vector thật** (query Q1 "Lãi tiền gửi ... VJC ... triệu đồng", dim 1024, chuẩn hoá norm=1):
+```
+[0.1502, 0.0581, -0.0231, 0.0062, 0.0133, -0.0330, 0.0665, 0.0038, ...]   (1024 giá trị)
+```
+(Chỉ minh hoạ 8 giá trị đầu — vector thật là mảng 1024 số float32.)
+
+**Lịch sử lựa chọn model:** ban đầu dùng `baai/bge-m3` (OpenRouter trả phí) → thử `nvidia/nemotron-3-embed-1b:free` (dim 2048) một thời gian → **đã revert về bge-m3** (local `bge_m3_server.py` + DeepInfra fallback) vì dim 1024 ổn định, không lệch dim, ít variance hơn. Cấu hình `api.yaml` (cloud-only CŨ: DeepInfra LLM + OpenRouter nemotron embed) giữ lại làm fallback profile, **không còn là default**; `local_vllm.yaml` mới là config chính cho local-AI.
 
 ### 5.5. Index Qdrant (Docker `localhost:6333`, collection `bctc_tables`)
 
 - **118,728 points** (bảng n_rows ≥ `min_n_rows=5`, bỏ bảng junk/TOC).
-- Dense HNSW (INT8 quantize, cosine) + sparse TF (local, `modifier: idf`).
+- Dense HNSW (INT8 quantize, cosine), **dim 1024** (bge-m3) + sparse TF (local, `modifier: idf`).
 - `use_dense=True`, `use_sparse=False` (dense-only — sparse TF gây nhiễu tiếng Việt).
 - **`k=10`** (top-k bảng trả evidence; 5→10 vì bảng đúng hay rank 6-8).
 - **Payload** mỗi point: `report_id, ticker, year, report_type, table_id, statement, unit_factor, header_text, row_labels, period_cols`.
 - **Search flow**: entity filter (ticker/year/report_type) → hybrid (dense + sparse RRF) → statement bonus mềm → top-k.
-- **Fallback**: filter report_type quá hẹp (báo cáo `other` không tách cons/sep — EVF/FTS...) → bỏ filter type.
+- **Fallback** (retrieval): filter report_type quá hẹp (báo cáo `other` không tách cons/sep — EVF/FTS...) → bỏ filter type. *(Lưu ý: đây là fallback tầng retrieval — khác với provider fallback DeepInfra ở tầng serve/embed, xem §5.4.)*
 
 ---
 
@@ -353,7 +356,7 @@ NGÂN HÀNG THƯƠNG MẠI CỔ PHẦN Á CHÂU
 1. **Retrieve**: `pipeline.search(question)` → top-k SearchResult.
 2. **Plan evidence**: bảng statement → dùng `evidence_merged` (gộp toàn bộ, preview 20k ký tự); bảng notes → tidy per-table. Dedupe theo (report_id, statement).
 3. **Deterministic engine** (`engine/deterministic.py`): lookup đơn giản (1 ticker + 1 chỉ tiêu) → match label trong facts/evidence → sinh `pandas_query` template. Không tốn LLM.
-4. **Codegen**: LLM (Qwen3.5-9B qua OpenRouter) sinh `pandas_query` từ cards (columns + sample rows + fact hints).
+4. **Codegen**: LLM (Qwen3.5-9B qua vLLM local, port 8001, fallback DeepInfra) sinh `pandas_query` từ cards (columns + sample rows + fact hints).
 5. **Sandbox**: AST check + exec trong cô lập, retry ≤2 lần khi lỗi (feed error vào LLM).
 6. **Builder** (`submission/builder.py`): materialize tidy CSVs flat + rewrite `relevant_tables` → `report_id|<start_line>` + nhúng `vn_num()` self-contained vào query.
 
@@ -399,7 +402,7 @@ NGÂN HÀNG THƯƠNG MẠI CỔ PHẦN Á CHÂU
 
 ### 🟡 Vấn đề #3: LLM variance trên model free
 
-- Nemotron free hay đổi hành vi giữa các lần chạy (temperature 0 nhưng không deterministic tuyệt đối) → cùng câu có lúc đúng lúc 0.0 (vd Q2, Q15 trong các lần test).
+- LLM free (trước đây qua OpenRouter, nhiều backend) hay đổi hành vi giữa các lần chạy (temperature 0 nhưng không deterministic tuyệt đối) → cùng câu có lúc đúng lúc 0.0 (vd Q2, Q15 trong các lần test). **Đổi sang vLLM local (greedy, temp 0, 1 backend) giảm đáng kể variance**; DeepInfra chỉ là fallback khi local down.
 - Giảm thiểu: deterministic engine bắt trước, retry repair path, `answer_abs_tol`, cache query đã pass sandbox.
 
 ### 🟡 Vấn đề #4: Chunk text có noise từ anchor
@@ -412,9 +415,9 @@ NGÂN HÀNG THƯƠNG MẠI CỔ PHẦN Á CHÂU
 
 - Wide CSV lệch cột header ngân hàng (rowspan) → parser fix + rebuild toàn corpus.
 - `row_labels` lấy nhầm cột STT ("1|2|3") khi code_col=0 → dùng `label_col` từ layout (giảm 4,215 → 12 bảng sai).
-- Index mixed embedding (OpenRouter + GPU thuê) → rebuild đồng nhất.
+- Index mixed embedding (đã thay bằng local `bge_m3_server.py` + DeepInfra fallback, dim 1024 đồng nhất) → rebuild.
 - FlagEmbedding 1.4 dependency vỡ (torchvision.io/BloomPreTrainedModel) → pin 1.2.10 + transformers 4.44.2.
-- Nemotron embed không hỗ trợ base64 → `encoding_format="float"`.
+- Nemotron embed không hỗ trợ base64 → `encoding_format="float"`. (Đã bỏ nemotron; bge-m3 qua `bge_m3_server.py /embed` trả dense JSON, DeepInfra bge-m3 qua OpenAI embeddings API vẫn dùng `encoding_format="float"`.)
 - Qdrant filter AND trả 0 khi chưa có payload index → tạo payload index tường minh (year/ticker/report_type/statement).
 - Qdrant "address already in use" khi Docker restart → dùng `free_port` + restart container.
 
@@ -435,27 +438,42 @@ python scripts/run_facts.py --workers 8
 # 4. Statement merged + statement_meta (~2p)
 python scripts/run_merged_evidence.py
 
-# 5. Index Qdrant (embed free + upsert, ~70p / có cache resume)
-docker start vifinqa-qdrant   # nếu tắt
-python scripts/build_retrieval_index.py
+# 5. Khởi động serving local-AI trên GPU thuê (GPU ≥16GB, lý tưởng 24GB; CHUNG 1 GPU 2 port)
+#    1 lệnh spawn bge TRƯỚC (poll /health tới ready) rồi mới start vLLM (tránh tranh VRAM):
+python scripts/serve_all.py
+#    (hoặc chạy 2 lệnh riêng: bge_m3_server.py rồi vllm_qwen_server.py)
+#    In ra block YAML → copy vào configs/local_vllm.yaml.
+#    GPU remote → đổi base_url http://localhost thành http://<GPU_IP> trong local_vllm.yaml.
+#    GPU yếu/OOM → giảm --gpu-memory-fraction xuống 0.5 hoặc --max-model-len.
 
-# 6. Codegen 20 câu test
+# 6. Index Qdrant — BẮT BUỘC rebuild lần đầu (dim 2048 → 1024, drop collection + xoá state):
+docker start vifinqa-qdrant   # nếu tắt
+python scripts/build_retrieval_index.py --config local_vllm.yaml --rebuild
+#    Lần sau (không đổi model/dim) bỏ --rebuild; cache .npy tự invalidate theo model+dim.
+
+# 7. Codegen 20 câu test
 python scripts/run_codegen_spots.py --ids 1,2,3,4,6,7,8,9,10,11,12,15,16,18,19,25,27,31,32,36
 
-# 7. Codegen full 1012 → results → submission
+# 8. Codegen full 1012 → results → submission
 python scripts/run_codegen.py
 python scripts/build_submission.py
 ```
 
-Yêu cầu: `.env` chứa `OPENROUTER_API_KEY` (LLM + embed), Docker chạy Qdrant (`vifinqa-qdrant`, port 6333).
+Mọi lệnh codegen/pipeline/submit thêm `--config local_vllm.yaml` để dùng local-AI profile.
+
+Yêu cầu: `.env` chứa `DEEPINFRA_TOKEN` (fallback cloud); `VLLM_API_KEY` tuỳ (mặc định `vllm`); `OPENROUTER_API_KEY` chỉ còn dùng cho profile `api.yaml` CŨ. Docker chạy Qdrant (`vifinqa-qdrant`, port 6333).
 
 ---
 
 ## 9. Cấu trúc repo
 
 ```
-configs/          base.yaml (chunk/index mặc định) + api.yaml (LLM + embed)
-scripts/          ETL, facts, merged, index, codegen, builder, bge_m3_server.py
+configs/          base.yaml (chunk/index mặc định) + api.yaml (cloud-only CŨ, fallback profile)
+                  + local_vllm.yaml (profile local-AI chính: vLLM + bge-m3 + fallback DeepInfra)
+scripts/          ETL, facts, merged, index, codegen, builder
+                  + bge_m3_server.py (BGE-M3 embed server, port 8000)
+                  + vllm_qwen_server.py (Qwen3.5-9B qua vLLM, port 8001, thinking off)
+                  + serve_all.py (spawn bge + vLLM chung 1 GPU, in YAML cho local_vllm.yaml)
 src/vifinqa/
   etl/            parser, format_classify, catalog_builder, tidy, facts_builder, merged_evidence
   retrieval/      entity, index (chunk+embed), search (hybrid), pipeline, facts_index
