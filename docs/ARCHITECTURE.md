@@ -173,7 +173,7 @@ CREATE VIRTUAL TABLE facts_fts USING fts5(
 
 ## 4. KIỂM THỬ XÁC MINH HỆ THỐNG (VERIFICATION SUITE)
 
-Hệ thống tích hợp hàm kiểm thử tự động `verify_database()` đối chiếu trực tiếp kết quả bóc tách với các câu hỏi thực tế trong `questions.jsonl`:
+Hệ thống tích hợp hàm kiểm thử tự động `verify_database()` đối chiếu trực tiếp kết quả bóc tách với các câu hỏi kiểm chứng đại diện (trích từ `data/questions/questions.jsonl`):
 
 1. **Kiểm tra quy mô CSDL**: Tổng số bản ghi đạt **2.116.243 facts** trên 100/100 mã cổ phiếu.
 2. **Kiểm chứng Câu 1 (Vietjet - VJC 2018 công ty mẹ)**:

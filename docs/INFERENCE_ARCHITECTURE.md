@@ -108,7 +108,7 @@ Columns:
 ```
 
 #### 3. Quy tắc Đơn vị & Hệ số Tiền tệ (Unit Conversion Policy)
-Khảo sát trên 1.012 câu hỏi thực tế trong `questions.jsonl`:
+Khảo sát trên 1.012 câu hỏi thực tế trong `data/questions/questions.jsonl`:
 | Đơn vị trong câu hỏi | Tần suất xuất hiện | Quy tắc tính toán trong SQL |
 | :--- | :---: | :--- |
 | **Nghìn tỷ đồng** | 85 câu | `ABS(value_vnd) / 1000000000000.0 AS value_nghin_ty` |
@@ -201,7 +201,11 @@ Thang điểm 9 tiêu chí nhị phân ($0 \text{ hoặc } 1$ điểm):
 $$ROE = \frac{\text{Lợi nhuận sau thuế}}{\text{Doanh thu thuần}} \times \frac{\text{Doanh thu thuần}}{\text{Tổng tài sản bình quân}} \times \frac{\text{Tổng tài sản bình quân}}{\text{Vốn chủ sở hữu bình quân}}$$
 Giúp trả lời rõ ràng: Lợi nhuận tăng trưởng là do **tối ưu giá vốn** (biên lãi), do **khai thác tốt tài sản** (vòng quay), hay do **lạm dụng đòn bẩy nợ**.
 
-#### 4. Dự báo Chuỗi thời gian (Time-Series Projections)
+#### 4. Dự báo Chuỗi thời gian (Time-Series Projections - Pure Python Implementation)
+* **Triết lý Ponytail & Zero-External-Deps**: Toàn bộ thuật toán được tự xây dựng bằng **Standard Library Python (`math`, `statistics`)**, hoàn toàn không phụ thuộc vào `numpy`, `scipy` hay `statsmodels`:
+  * Độ dốc $\beta = \frac{\sum (x - \bar{x})(y - \bar{y})}{\sum (x - \bar{x})^2}$
+  * Hệ số chặn $\alpha = \bar{y} - \beta \bar{x}$
+  * Sai số chuẩn $SE = \sqrt{\frac{\sum (y - \hat{y})^2}{n - 2}}$
 * Tính toán **CAGR (Tốc độ tăng trưởng kép)** chuỗi 3 năm, 5 năm, 10 năm:
   $$CAGR = \left( \frac{V_{\text{cuối}}}{V_{\text{đầu}}} \right)^{\frac{1}{N}} - 1$$
 * **Dự báo Doanh thu / Lợi nhuận năm tới ($T+1$)**:
@@ -360,7 +364,7 @@ Kiểm tra tính khả dụng của hệ thống:
 ## 4. MA TRẬN ĐÁNH GIÁ (EVALUATION ROADMAP)
 
 Hệ thống được đánh giá qua 4 tiêu chuẩn định lượng nghiêm ngặt:
-1. **Execution Accuracy (EX-Acc)**: Đo lường tỷ lệ câu SQL sinh ra cho kết quả số học khớp 100% với đáp án chuẩn trong benchmark (Mục tiêu: > 85%).
+1. **Execution Accuracy (EX-Acc)**: Đo lường tỷ lệ câu SQL sinh ra cho kết quả số học khớp 100% với đáp án chuẩn trong benchmark `data/questions/questions.jsonl` (Mục tiêu: > 85%).
 2. **Provenance Recall**: Tỷ lệ câu trả lời trích dẫn đúng số trang (`page_no`) và tài liệu gốc (`source_doc`) (Mục tiêu: > 95%).
 3. **Analytics Formula Integrity**: Xác thực chéo kết quả tính Z-Score, F-Score, DuPont giữa hàm Python và bảng tính Excel kế toán độc lập (Sai số chấp nhận: 0.0%).
 4. **Latency Benchmark**:

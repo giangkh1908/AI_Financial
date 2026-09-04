@@ -125,6 +125,9 @@ AI_Financial/
 
 ### 3.5. `src/analytics.py` (Module Phân tích & Dự báo Định lượng)
 * **Nhiệm vụ**: Chứa các thuật toán toán học tài chính độc lập, nhận dữ liệu số từ `db.py` để tính toán chỉ số.
+* **Triết lý Zero-External-Deps (Pure Python Standard Library)**:
+  * Toàn bộ thuật toán (Z-Score, F-Score, DuPont, OLS Regression, CAGR) được tự triển khai 100% bằng thư viện chuẩn Python (`math`, `statistics`).
+  * **Tuyệt đối không phụ thuộc vào `numpy`, `scipy` hay `statsmodels`**, giúp ứng dụng siêu nhẹ, khởi động tức thì (< 50ms) và không có rủi ro xung đột môi trường C-extension trên Windows.
 * **Các hàm cốt lõi**:
   * `get_altman_z_score(ticker: str, year: int) -> dict`: Tính 5 hệ số $X_1 \dots X_5$, trả về điểm Z và vùng phân định.
   * `get_piotroski_f_score(ticker: str, year: int) -> dict`: Đánh giá 9 tiêu chí nhị phân giữa năm $T$ và $T-1$.
@@ -140,6 +143,42 @@ AI_Financial/
   * `POST /api/v1/analytics/diagnostics`: Trả về Z-Score, F-Score, DuPont.
   * `POST /api/v1/analytics/forecast`: Trả về dự báo chuỗi thời gian.
   * `GET /api/v1/health`: Kiểm tra trạng thái CSDL và Model.
+
+---
+
+### 3.7. `.agents/skills/system-evaluator/scripts/audit_engine.py` (Engine Thẩm định Độc lập)
+* **Nhiệm vụ**: Đóng vai trò là "Cơ quan kiểm toán độc lập" của hệ thống (theo quy định tại `GEMINI.md`).
+* **Chức năng chính**:
+  * Chạy độc lập qua CLI (`python .agents/skills/system-evaluator/scripts/audit_engine.py --sqlite ... --benchmark ...`).
+  * Tự động soi chiếu 4 đỉnh: Docs (khẳng định số dòng, tỷ lệ BCTC, schema 16 cột) vs CSDL thật (`data/financial.db`) vs Code (mẫu query, quy tắc an toàn) vs Benchmark (`data/questions/questions.jsonl`).
+  * Đo lường chính xác các điểm lệch (Drift Matrix) và phát hiện điểm mù truy vấn (Query Blindspots như định dạng ngày phân cách dấu chấm `.`).
+
+---
+
+### 3.8. Sơ đồ Phụ thuộc Module (Module Dependency Graph)
+
+Cấu trúc phụ thuộc một chiều, tuyệt đối không có phụ thuộc vòng (Circular Dependencies):
+
+```mermaid
+graph TD
+    API["src/api.py<br/>(FastAPI Serving Layer)"] --> Engine["src/engine.py<br/>(Core Orchestrator)"]
+    API --> Analytics["src/analytics.py<br/>(Pure Python Financial Math)"]
+    API --> Config["src/config.py<br/>(Global Settings)"]
+
+    Engine --> SLM["src/slm.py<br/>(Qwen3.5-4B Client)"]
+    Engine --> DB["src/db.py<br/>(SQLite Read-Only Executor)"]
+    Engine --> Config
+
+    Analytics --> DB
+    Analytics --> Config
+
+    DB --> Config
+    SLM --> Config
+
+    Audit["audit_engine.py<br/>(Independent Auditor)"] -.-> DB_File[("data/financial.db")]
+    Audit -.-> Bench_File["data/questions/questions.jsonl"]
+    Audit -.-> Docs["docs/*.md"]
+```
 
 ---
 
