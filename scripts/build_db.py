@@ -105,16 +105,30 @@ def detect_unit_and_factor(text: str):
     return "VND", 1.0
 
 
-def classify_statement(title_text: str) -> str:
-    """Classifies statement type from section or page title."""
-    t = title_text.upper()
-    if "CÂN ĐỐI KẾ TOÁN" in t or "TÌNH HÌNH TÀI CHÍNH" in t:
-        return "balance_sheet"
-    elif "KẾT QUẢ HOẠT ĐỘNG" in t or "KẾT QUẢ KINH DOANH" in t or "THU NHẬP TOÀN DIỆN" in t:
-        return "income_statement"
-    elif "LƯU CHUYỂN TIỀN" in t:
+def classify_statement(text_before: str, title_text: str) -> str:
+    """Classifies statement type from preceding section or page title, checking form codes and unaccented terms."""
+    combined = f"{text_before} {title_text}"
+    t_upper = combined.upper()
+    t_clean = combined.replace("đ", "d").replace("Đ", "d").lower()
+
+    # 1. Check standard accounting form codes (Mẫu biểu Thông tư & Quyết định)
+    if re.search(r'\b(b\s*03|b03|b\s*04/tctd|b04/tctd|b03b?-ctck)\b', t_clean):
         return "cash_flow"
-    elif "THUYẾT MINH" in t:
+    if re.search(r'\b(b\s*02|b02|b\s*03/tctd|b03/tctd|b02-ctck)\b', t_clean):
+        return "income_statement"
+    if re.search(r'\b(b\s*01|b01|b\s*02/tctd|b02/tctd|b01-ctck)\b', t_clean):
+        return "balance_sheet"
+    if re.search(r'\b(b\s*09|b09|b\s*05/tctd|b05/tctd)\b', t_clean):
+        return "notes"
+
+    # 2. Check title keywords (both accented and unaccented/OCR variations)
+    if any(k in t_clean for k in ["luu chuyen", "lu'u chuyen", "lưu chuyển", "luu chuyen tien", "luu chuyen tien te"]):
+        return "cash_flow"
+    if any(k in t_clean for k in ["ket qua hoat dong", "ket qua kinh doanh", "thu nhap toan dien", "kết quả", "thu nhập toàn diện"]):
+        return "income_statement"
+    if any(k in t_clean for k in ["can doi ke toan", "tinh hinh tai chinh", "cân đối", "tình hình tài chính"]):
+        return "balance_sheet"
+    if "thuyet minh" in t_clean or "thuyết minh" in t_upper:
         return "notes"
     return "notes"
 
@@ -185,7 +199,7 @@ def parse_file(file_path: str, company_map: dict):
         text_before_tables = RE_TABLE.split(page_content)[0]
         header_lines = [line.strip() for line in text_before_tables.split("\n") if line.strip()]
         page_title = " // ".join(header_lines[-3:]) if header_lines else ""
-        statement_type = classify_statement(page_title)
+        statement_type = classify_statement(text_before_tables, page_title)
 
         for tbl_idx, tbl_html in enumerate(table_matches):
             tr_matches = RE_TR.findall(tbl_html)
@@ -432,6 +446,14 @@ def verify_database():
         print(f"  -> {r[0]} | Kỳ: {r[1]} | Raw: {r[2]} | VND: {r[3]:,.0f} | Trang {r[4]} ({r[5]})")
     assert len(acb_rows) > 0, "Did not find ACB Thương mại facts!"
     print("  => CHECK 2 PASSED!")
+
+    # Test Check 3: Cash Flow coverage
+    print("\n[Check 3] Verify Cash Flow Statement coverage:")
+    cur.execute("SELECT COUNT(*), COUNT(DISTINCT ticker) FROM financial_facts WHERE statement = 'cash_flow'")
+    cf_count, cf_tickers = cur.fetchone()
+    print(f"  -> Cash Flow facts: {cf_count:,} across {cf_tickers} tickers")
+    assert cf_count > 20000, f"Cash flow facts too low: {cf_count}"
+    print("  => CHECK 3 PASSED!")
 
     conn.close()
     print("\nALL SYSTEM VERIFICATION CHECKS PASSED PERFECTLY!\n")
