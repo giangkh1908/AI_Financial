@@ -62,7 +62,7 @@ Hoạt động theo cơ chế **2-Stage Hybrid Router**:
   * Chứa từ khóa *"tổng hợp"* $\rightarrow$ `report_type = 'aggregated'` (Áp dụng cho ACV, DTK, SJG... có 7.833 dòng thực tế)
   * Mặc định hoặc chứa *"hợp nhất"* $\rightarrow$ `report_type = 'consolidated'`
 * **Kỳ kế toán (Period Mapping)**:
-  * Chứa *"đầu năm"* $\rightarrow$ ánh xạ `period_label LIKE '%đầu năm%'` hoặc `LIKE '%01/01%'`
+  * Chứa *"đầu năm"* $\rightarrow$ ánh xạ `period_label LIKE '%đầu năm%'` hoặc `LIKE '%01/01%'` hoặc `LIKE '%1/1/%'`
   * Chứa *"cuối năm"* $\rightarrow$ ánh xạ `period_label LIKE '%cuối năm%'` hoặc `LIKE '%31/12%'`
 
 #### Stage 2: Phân luồng Ý định (Branch Classification)
@@ -88,7 +88,7 @@ Columns:
 - year: INTEGER (Năm báo cáo: 2015 đến 2025)
 - report_type: TEXT ('consolidated' [Hợp nhất], 'separate' [Mẹ/Riêng lẻ], 'aggregated' [Tổng hợp])
 - statement: TEXT ('balance_sheet', 'income_statement', 'cash_flow', 'notes')
-- section_title: TEXT (Tên phân mục / Thuyết minh: 'Thuyết minh số 28 - Doanh thu tài chính')
+- section_title: TEXT (Tên phân mục / Thuyết minh: '29. Doanh thu hoạt động tài chính')
 - item_code: TEXT (Mã số kế toán: '100', '110', '05', 'I', 'II')
 - item_name: TEXT (Tên chỉ tiêu có dấu gốc)
 - item_name_ascii: TEXT (Tên chỉ tiêu viết thường không dấu: 'lai tien gui va cho vay')
@@ -108,9 +108,9 @@ Khảo sát trên 1.012 câu hỏi thực tế trong `questions.jsonl`:
 | **Trăm tỷ đồng** | 66 câu | `ABS(value_vnd) / 100000000000.0 AS value_tram_ty` |
 | **Tỷ đồng** | Phổ biến | `ABS(value_vnd) / 1000000000.0 AS value_ty` |
 | **Triệu đồng** | Rất phổ biến | `ABS(value_vnd) / 1000000.0 AS value_trieu` |
-| **Nghìn đồng** | 16 câu | `ABS(value_vnd) / 1000.0 AS value_nghin` |
+| **Nghìn đồng** | 17 câu (16 nghìn + 1 ngàn) | `ABS(value_vnd) / 1000.0 AS value_nghin` |
 | **Tỷ lệ phần trăm (%)** | 260 câu | Trích xuất `raw_value` hoặc tính tỷ lệ giữa 2 chỉ tiêu, **không chia hệ số tiền tệ**. |
-| **Cổ phiếu / Cổ phần** | 144 câu | Trích xuất `raw_value` (ví dụ: số lượng CP đang lưu hành, EPS). |
+| **Cổ phiếu / Cổ phần** | 107 câu unique (124 lượt) | Trích xuất `raw_value` (ví dụ: số lượng CP đang lưu hành, EPS). |
 
 #### 4. Chính sách xử lý dữ liệu USD (USD Exclusion Policy)
 Trong CSDL có **30.556 bản ghi** mang `unit = 'USD'` (factor lưu trữ = 1.0).
@@ -156,7 +156,7 @@ Trong CSDL có **30.556 bản ghi** mang `unit = 'USD'` (factor lưu trữ = 1.0
   📌 Nguồn dữ liệu kiểm chứng:
   • Doanh nghiệp: CTCP Hàng không Vietjet (VJC)
   • Báo cáo: Báo cáo tài chính kiểm toán công ty mẹ năm 2018 (VJC_financial_statements_2018_separate)
-  • Vị trí: Trang 10 (Lưu chuyển tiền tệ) và Trang 44 (Thuyết minh 28 - Doanh thu tài chính)
+  • Vị trí: Trang 10 (Lưu chuyển tiền tệ) và Trang 44 (Thuyết minh 29 - Doanh thu hoạt động tài chính)
   • Giá trị gốc trong bảng: 208.253.201.298 VNĐ
   ```
 

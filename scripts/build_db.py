@@ -437,6 +437,7 @@ def verify_database():
         SELECT item_name, period_label, raw_value, value_vnd, page_no, source_doc
         FROM financial_facts
         WHERE ticker = 'ACB' AND year = 2022
+          AND report_type = 'separate'
           AND item_name_ascii = 'thuong mai'
         ORDER BY page_no ASC
         LIMIT 5
