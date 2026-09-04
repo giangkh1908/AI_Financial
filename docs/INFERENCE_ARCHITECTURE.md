@@ -62,8 +62,8 @@ Hoạt động theo cơ chế **2-Stage Hybrid Router**:
   * Chứa từ khóa *"tổng hợp"* $\rightarrow$ `report_type = 'aggregated'` (Áp dụng cho ACV, DTK, SJG... có 7.833 dòng thực tế)
   * Mặc định hoặc chứa *"hợp nhất"* $\rightarrow$ `report_type = 'consolidated'`
 * **Kỳ kế toán (Period Mapping)**:
-  * Chứa *"đầu năm"* $\rightarrow$ ánh xạ `period_label LIKE '%đầu năm%'` hoặc `LIKE '%01/01%'` hoặc `LIKE '%1/1/%'`
-  * Chứa *"cuối năm"* $\rightarrow$ ánh xạ `period_label LIKE '%cuối năm%'` hoặc `LIKE '%31/12%'`
+  * Chứa *"đầu năm"* $\rightarrow$ ánh xạ `(period_label LIKE '%đầu năm%' OR period_label LIKE '%01/01%' OR period_label LIKE '%1/1/%' OR period_label LIKE '%01.01%' OR period_label LIKE '%1.1.%')`
+  * Chứa *"cuối năm"* $\rightarrow$ ánh xạ `(period_label LIKE '%cuối năm%' OR period_label LIKE '%31/12%' OR period_label LIKE '%31.12%')`
 
 #### Stage 2: Phân luồng Ý định (Branch Classification)
 * **Nhánh Số liệu (Quantitative)**: Câu hỏi chứa từ khóa số lượng (`lãi`, `doanh thu`, `chi phí`, `nợ`, `tài sản`, `cho vay`, `vốn`, `bao nhiêu`, `tăng trưởng`, `so sánh`) $\rightarrow$ Chuyển sang **Text-to-SQL Engine**.

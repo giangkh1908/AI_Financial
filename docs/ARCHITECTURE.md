@@ -121,7 +121,7 @@ Quy trình triển khai thực tế trong `scripts/build_db.py`:
 
 CSDL lưu trữ tại [`data/financial.db`](file:///D:/GURU/data/financial.db) gồm **2 bảng duy nhất**:
 
-### 3.1. Bảng Dữ liệu Tài chính (`financial_facts` - Đầy đủ 15 cột thực tế)
+### 3.1. Bảng Dữ liệu Tài chính (`financial_facts` - 16 cột gồm id PK và 15 cột nghiệp vụ)
 
 ```sql
 CREATE TABLE financial_facts (
