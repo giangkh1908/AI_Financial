@@ -6,7 +6,10 @@
 # ---------- DỮ LIỆU (quan trọng nhất) ----------
 # Toàn bộ thư mục data/: dataset thô tải từ Hugging Face + CSV chuẩn hoá phát sinh.
 # Raw dataset ~363MB+ — không bao giờ được push lên git.
-data/
+data/*
+!data/code_stock.csv
+!data/questions/
+!data/questions/questions.jsonl
 
 # ---------- Python ----------
 __pycache__/

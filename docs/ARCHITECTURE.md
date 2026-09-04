@@ -1,7 +1,7 @@
 # KIẾN TRÚC HỆ THỐNG TRỢ LÝ TÀI CHÍNH TEXT-TO-SQL GROUNDED RAG
 
 > **Trạng thái triển khai**:
-> * **Tầng Dữ liệu & ETL Pipeline**: `[ĐÃ TRIỂN KHAI / IMPLEMENTED]` (Mã nguồn: `scripts/build_db.py`, CSDL: `data/financial.db` gồm 2.116.243 bản ghi từ 1.973 báo cáo tài chính của 100 doanh nghiệp niêm yết).
+> * **Tầng Dữ liệu & ETL Pipeline**: `[ĐÃ TRIỂN KHAI / IMPLEMENTED]` (Mã nguồn: `scripts/build_db.py`, CSDL: `data/financial.db` gồm 2.116.243 bản ghi từ 1.962 tài liệu BCTC của 100 doanh nghiệp niêm yết; tổng quét 1.973 file thô trên ổ đĩa trong đó 11 file công văn giải trình dạng thư của mã PRT không chứa bảng tài chính).
 > * **Tầng Suy luận & Phục vụ (Inference & Serving)**: `[THIẾT KẾ MỤC TIÊU / TARGET SPEC]` (Đặc tả chi tiết tại `docs/INFERENCE_ARCHITECTURE.md`).
 
 ---
@@ -83,12 +83,11 @@ Quy trình triển khai thực tế trong `scripts/build_db.py`:
 │ - Tách văn bản theo các mốc trang (===== PAGE X =====).                       │
 │ - Nhận diện đơn vị tiền tệ trang (VND, Triệu VND, Tỷ VND, Nghìn VND, USD).   │
 │ - Phân loại Báo cáo (statement):                                              │
-│   • 'balance_sheet' (Bảng cân đối kế toán): 215.510 bản ghi                   │
-│   • 'income_statement' (Báo cáo kết quả HĐKD): 71.046 bản ghi                 │
-│   • 'cash_flow' (Báo cáo lưu chuyển tiền tệ): 6.581 bản ghi                   │
-│   • 'notes' (Thuyết minh BCTC): 1.823.106 bản ghi (86,1%)                     │
-│   ⚠️ Lưu ý: Tỷ trọng 'cash_flow' độc lập thấp vì phần lớn chỉ tiêu lưu chuyển│
-│      tiền tệ chi tiết nằm trong phần Thuyết minh ('notes').                   │
+│   • 'notes' (Thuyết minh BCTC): 1.733.823 bản ghi (81,9%)                     │
+│   • 'balance_sheet' (Bảng cân đối kế toán): 167.214 bản ghi (7,9%)           │
+│   • 'income_statement' (Báo cáo kết quả HĐKD): 109.537 bản ghi (5,2%)         │
+│   • 'cash_flow' (Báo cáo lưu chuyển tiền tệ): 105.669 bản ghi (5,0%)          │
+│   ✅ Nhận diện đầy đủ mã mẫu biểu B01/B02/B03/B09, phủ sóng 99/100 mã CP.     │
 └───────────────────────────────────────────────────────────────────────────────┘
                                   │
                                   ▼

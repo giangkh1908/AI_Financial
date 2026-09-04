@@ -139,7 +139,7 @@ Trong CSDL có **30.556 bản ghi** mang `unit = 'USD'` (factor lưu trữ = 1.0
 
 Đối với 10% các câu hỏi định tính (ý kiến kiểm toán, chính sách khấu hao):
 * Dữ liệu định tính được truy xuất từ 2 nguồn:
-  1. Các bản ghi trong `financial_facts` có `statement = 'notes'` (chiếm 86,1% dữ liệu).
+  1. Các bản ghi trong `financial_facts` có `statement = 'notes'` (chiếm 81,9% dữ liệu - 1.733.823 dòng).
   2. Đọc trực tiếp các đoạn văn bản gốc từ file `_extracted.txt` theo cặp khóa `(source_doc, page_no)` đã được đánh chỉ mục.
 * Trích xuất đoạn văn liên quan và đưa vào Context của LLM để tóm tắt cho người dùng.
 
