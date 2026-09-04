@@ -1,14 +1,14 @@
-# KIẾN TRÚC HỆ THỐNG TRỢ LÝ TÀI CHÍNH TEXT-TO-SQL GROUNDED RAG
+# KIẾN TRÚC HỆ THỐNG TRỢ LÝ TÀI CHÍNH TEXT-TO-SQL & QUANTITATIVE ANALYTICS
 
 > **Trạng thái triển khai**:
 > * **Tầng Dữ liệu & ETL Pipeline**: `[ĐÃ TRIỂN KHAI / IMPLEMENTED]` (Mã nguồn: `scripts/build_db.py`, CSDL: `data/financial.db` gồm 2.116.243 bản ghi từ 1.962 tài liệu BCTC của 100 doanh nghiệp niêm yết; tổng quét 1.973 file thô trên ổ đĩa trong đó 11 file công văn giải trình dạng thư của mã PRT không chứa bảng tài chính).
-> * **Tầng Suy luận & Phục vụ (Inference & Serving)**: `[THIẾT KẾ MỤC TIÊU / TARGET SPEC]` (Đặc tả chi tiết tại `docs/INFERENCE_ARCHITECTURE.md`).
+> * **Tầng Suy luận & Phân tích (Inference & Analytics)**: `[THIẾT KẾ MỤC TIÊU / TARGET SPEC]` (Đặc tả chi tiết tại `docs/INFERENCE_ARCHITECTURE.md`).
 
 ---
 
 ## 1. TỔNG QUAN HỆ THỐNG (SYSTEM OVERVIEW)
 
-Hệ thống được thiết kế theo mô hình **Structured-First Hybrid Financial Assistant**: kết hợp giữa tính toán tất định (Deterministic Execution) trên Cơ sở dữ liệu quan hệ và năng lực dịch ngôn ngữ tự nhiên của Mô hình ngôn ngữ lớn chuyên biệt (Text-to-SQL SLM).
+Hệ thống được thiết kế theo mô hình **Deterministic Text-to-SQL & Quantitative Financial Analytics**: kết hợp giữa tính toán tất định (Deterministic Execution) trên Cơ sở dữ liệu quan hệ, phân tích định lượng chuỗi thời gian (Altman Z-Score, Piotroski F-Score, DuPont, Time-Series Forecasting), và năng lực dịch ngôn ngữ tự nhiên của Mô hình ngôn ngữ lớn chuyên biệt (Text-to-SQL SLM).
 
 ```
 [Người dùng đặt câu hỏi tự nhiên tiếng Việt]
@@ -34,12 +34,20 @@ Hệ thống được thiết kế theo mô hình **Structured-First Hybrid Fina
 │ 3. Database Engine (SQLite Native + FTS5)              │
 │    - Thực thi truy vấn B-Tree Index (< 2ms)            │
 │    - Tìm kiếm toàn văn chỉ tiêu bằng SQLite FTS5       │
-│    - Trả về số thực chuẩn hóa (VNĐ) kèm trích dẫn gốc  │
+│    - Trích xuất Time-Series Facts 10 năm (2015-2025)   │
 └────────────────────────────────────────────────────────┘
                      │
                      ▼
 ┌────────────────────────────────────────────────────────┐
-│ 4. Grounded Response & Provenance                      │
+│ 4. Financial Analytics & Forecasting Module            │
+│    - Chẩn đoán sức khỏe tài chính: Z-Score, F-Score    │
+│    - Phân rã hiệu quả hoạt động: DuPont 3 & 5 bước     │
+│    - Dự báo chuỗi thời gian: CAGR, Trend Projections   │
+└────────────────────────────────────────────────────────┘
+                     │
+                     ▼
+┌────────────────────────────────────────────────────────┐
+│ 5. Grounded Response & Provenance                      │
 │    - Định dạng số chuẩn (Tỷ / Triệu VNĐ)               │
 │    - Đính kèm minh chứng kiểm toán: Tài liệu, Trang BCTC│
 └────────────────────────────────────────────────────────┘
