@@ -9,7 +9,7 @@ import sqlite3
 import time
 from typing import Any, Dict, List, Optional
 
-from src.config import DB_PATH, DEFAULT_ROW_LIMIT, MAX_ROW_LIMIT
+from src.config import DB_PATH, DEFAULT_ROW_LIMIT
 
 # Blocked mutating SQL keywords for safety
 DISALLOWED_KEYWORDS_REGEX = re.compile(
@@ -36,6 +36,10 @@ def sanitize_and_prepare_query(query: str) -> str:
     """Validates query against SQL injection / mutation and enforces reasonable LIMIT."""
     cleaned = query.strip().rstrip(";")
 
+    # Disallow internal semicolons to prevent multi-statement injection
+    if ";" in cleaned:
+        raise PermissionError("Security Alert: Multi-statement SQL queries are not permitted.")
+
     # Check for mutating statements
     match = DISALLOWED_KEYWORDS_REGEX.search(cleaned)
     if match:
@@ -58,9 +62,10 @@ def sanitize_and_prepare_query(query: str) -> str:
 def execute_query(query: str, params: tuple = ()) -> Dict[str, Any]:
     """
     Executes a sanitized read-only SQL query against financial.db.
-    Returns rows as list of dicts along with latency and metadata.
+    Guarantees connection cleanup via try/finally.
     """
     start_time = time.perf_counter()
+    safe_sql = query
 
     try:
         safe_sql = sanitize_and_prepare_query(query)
@@ -74,13 +79,13 @@ def execute_query(query: str, params: tuple = ()) -> Dict[str, Any]:
             "error": str(err),
         }
 
+    conn = None
     try:
         conn = get_connection()
         cur = conn.cursor()
         cur.execute(safe_sql, params)
         raw_rows = cur.fetchall()
         rows = [dict(r) for r in raw_rows]
-        conn.close()
 
         elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
         return {
@@ -95,12 +100,15 @@ def execute_query(query: str, params: tuple = ()) -> Dict[str, Any]:
         elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
         return {
             "status": "error",
-            "sql_query": safe_sql if "safe_sql" in locals() else query,
+            "sql_query": safe_sql,
             "rows": [],
             "row_count": 0,
             "execution_time_ms": elapsed_ms,
             "error": f"Execution failed: {err}",
         }
+    finally:
+        if conn:
+            conn.close()
 
 
 def fts_fallback_query(
@@ -157,13 +165,13 @@ def fts_fallback_query(
 
     all_params = (fts_match_expr, *params, limit)
 
+    conn = None
     try:
         conn = get_connection()
         cur = conn.cursor()
         cur.execute(sql, all_params)
         raw_rows = cur.fetchall()
         rows = [dict(r) for r in raw_rows]
-        conn.close()
 
         elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
         return {
@@ -184,6 +192,9 @@ def fts_fallback_query(
             "execution_time_ms": elapsed_ms,
             "error": f"FTS5 Query failed: {err}",
         }
+    finally:
+        if conn:
+            conn.close()
 
 
 def extract_provenance(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

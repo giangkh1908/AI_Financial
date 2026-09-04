@@ -27,4 +27,3 @@ API_PORT = int(os.getenv("API_PORT", 8000))
 # Execution & Safety Guards
 SQL_TIMEOUT_SECONDS = 5.0
 DEFAULT_ROW_LIMIT = 10
-MAX_ROW_LIMIT = 50

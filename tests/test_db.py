@@ -41,6 +41,8 @@ def test_security_blocked_mutations():
         "INSERT INTO financial_facts (ticker) VALUES ('FAKE')",
         "UPDATE financial_facts SET ticker = 'HACKED'",
         "ALTER TABLE financial_facts ADD COLUMN hacked TEXT",
+        "SELECT 1; SELECT 2",
+        "SELECT * FROM financial_facts; DROP TABLE financial_facts",
     ]
 
     for q in evil_queries:
