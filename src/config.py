@@ -18,7 +18,7 @@ STATEMENTS_DIR = DATA_DIR / "financial_statements"
 
 # Model & Serving Config
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-SLM_MODEL_NAME = os.getenv("SLM_MODEL_NAME", "giangkh19/qwen3.5-4b-sql-gguf:Q4_K_M")
+SLM_MODEL_NAME = os.getenv("SLM_MODEL_NAME", "qwen3.5-4b-sql")
 
 # REST API Config
 API_HOST = os.getenv("API_HOST", "0.0.0.0")

@@ -89,7 +89,7 @@ def call_ollama(
     prompt: str,
     model: str = SLM_MODEL_NAME,
     base_url: str = OLLAMA_BASE_URL,
-    timeout: float = 10.0,
+    timeout: float = 120.0,
 ) -> Dict[str, Any]:
     """
     Makes an HTTP POST request to Ollama generate endpoint.
@@ -102,6 +102,7 @@ def call_ollama(
         "stream": False,
         "options": {
             "temperature": 0.0,
+            "num_predict": 384,
         },
     }
 
@@ -234,7 +235,7 @@ def generate_sql(
     Tries Ollama first. If Ollama is offline and allow_fallback is True, uses rule-based generator.
     """
     prompt = build_prompt(question)
-    ollama_res = call_ollama(prompt, model=model, base_url=base_url, timeout=15.0)
+    ollama_res = call_ollama(prompt, model=model, base_url=base_url, timeout=120.0)
 
     if ollama_res["status"] == "success":
         reasoning, sql = extract_think_and_sql(ollama_res["response"])

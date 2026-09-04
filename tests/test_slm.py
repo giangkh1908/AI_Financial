@@ -92,6 +92,16 @@ def test_generate_sql_e2e():
     print(f"  [PASS] test_generate_sql_e2e (Mode: {res['mode']})")
 
 
+def test_live_ollama_inference():
+    """Verify live communication with local Ollama service and qwen3.5-4b-sql model."""
+    res = generate_sql("Lợi nhuận sau thuế năm 2023 của Hòa Phát (HPG) là bao nhiêu tỷ đồng?", allow_fallback=False)
+    assert res["status"] == "success", f"Live Ollama inference failed: {res.get('error')}"
+    assert res["mode"] == "ollama_slm", f"Expected ollama_slm, got {res.get('mode')}"
+    assert res["sql_query"] is not None and "SELECT" in res["sql_query"]
+    assert "HPG" in res["sql_query"]
+    print(f"  [PASS] test_live_ollama_inference (Live model: {res['model']}, SQL generated successfully)")
+
+
 def run_all_tests():
     print("\n==================================================")
     print("RUNNING INDEPENDENT TESTS FOR src/slm.py")
@@ -100,6 +110,7 @@ def run_all_tests():
     test_extract_think_and_sql()
     test_rule_based_fallback_sql()
     test_generate_sql_e2e()
+    test_live_ollama_inference()
     print("==================================================")
     print("ALL TESTS PASSED PERFECTLY!\n")
 
